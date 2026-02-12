@@ -91,6 +91,20 @@ export const tools: Anthropic.Tool[] = [
         leverage: { type: "number" as const },
       }, required: ["market", "side", "size", "price", "leverage"] } },
     }, required: ["orders"] } },
+  { name: "add_margin", description: "Add margin to an open position. Confirm with user first.",
+    input_schema: { type: "object" as const, properties: {
+      market: M,
+      amount: { type: "number" as const, description: "USD amount to add" },
+    }, required: ["market", "amount"] } },
+  { name: "remove_margin", description: "Request margin removal from position (2-step: request + finalize after timelock). Confirm with user first.",
+    input_schema: { type: "object" as const, properties: {
+      market: M,
+      amount: { type: "number" as const, description: "USD amount to remove" },
+    }, required: ["market", "amount"] } },
+  { name: "cancel_all_orders", description: "Cancel all resting orders on a market. Confirm with user first.",
+    input_schema: { type: "object" as const, properties: {
+      market: M,
+    }, required: ["market"] } },
   { name: "set_stop_loss", description: "Set stop-loss trigger order. Waits for price to reach level, then closes.",
     input_schema: { type: "object" as const, properties: {
       market: M,
@@ -201,6 +215,21 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         result = await bridge.batchOpenPositions(
           input.orders as Array<{ market: string; side: "long" | "short"; size: number; price: number; leverage: number }>,
         );
+        break;
+      case "add_margin":
+        result = await bridge.addMargin({
+          market: input.market as string,
+          amount: input.amount as number,
+        });
+        break;
+      case "remove_margin":
+        result = await bridge.removeMargin({
+          market: input.market as string,
+          amount: input.amount as number,
+        });
+        break;
+      case "cancel_all_orders":
+        result = await bridge.cancelAllOrders(input.market as string);
         break;
       case "set_stop_loss":
         result = await bridge.setStopLoss({

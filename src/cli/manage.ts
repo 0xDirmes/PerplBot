@@ -327,7 +327,7 @@ export function registerManageCommand(program: Command): void {
             funding: `${fundingRate >= 0 ? "+" : ""}${(fundingRate * 100).toFixed(4)}%`,
             longOI: longOI.toFixed(lotDecimals > 4 ? 4 : lotDecimals),
             shortOI: shortOI.toFixed(lotDecimals > 4 ? 4 : lotDecimals),
-            status: info.paused ? "PAUSED" : "Active",
+            status: info.status !== 0 ? "PAUSED" : "Active",
           });
         } catch {
           // Market doesn't exist or error fetching

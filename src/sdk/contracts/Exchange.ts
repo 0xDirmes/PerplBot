@@ -53,6 +53,7 @@ export interface OrderDesc {
   leverageHdths: bigint;
   lastExecutionBlock: bigint;
   amountCNS: bigint;
+  maxSlippageBps: bigint;
 }
 
 /**
@@ -112,7 +113,7 @@ export interface PerpetualInfo {
   shortOpenInterestLNS: bigint;
   fundingStartBlock: bigint;
   fundingRatePct100k: number;
-  synthPerpPricePNS: bigint;
+  status: number;
   paused: boolean;
   basePricePNS: bigint;
   maxBidPriceONS: bigint;
@@ -133,6 +134,45 @@ export interface BookPriceVolume {
 }
 
 /**
+ * Liquidation info from getLiquidationInfo
+ */
+export interface LiquidationInfo {
+  liqInsAmtPer100K: bigint;
+  liqUserAmtPer100K: bigint;
+  liqProtocolAmtPer100K: bigint;
+  btlPriceThreshPer100K: bigint;
+  btlInsAmtPer100K: bigint;
+  btlUserAmtPer100K: bigint;
+  btlBuyerAmtPer100K: bigint;
+  btlProtocolAmtPer100K: bigint;
+  btlRestrictBuyers: boolean;
+}
+
+/**
+ * Margin fractions from getMarginFractions
+ */
+export interface MarginFractions {
+  perpInitMarginFracHdths: bigint;
+  perpMaintMarginFracHdths: bigint;
+  dynamicInitMarginFracHdths: bigint;
+  oiMaxLNS: bigint;
+  unityDescentThreshHdths: bigint;
+  overColDescentThreshHdths: bigint;
+}
+
+/**
+ * Order lock from getOrderLocks / getPerpOrderLocks
+ */
+export interface OrderLock {
+  orderLockId: number;
+  nextOrderLockId: number;
+  prevOrderLockId: number;
+  orderType: number;
+  lotLNS: bigint;
+  amountCNS: bigint;
+}
+
+/**
  * Individual order at a price level from getOrdersAtPriceLevel
  */
 export interface PriceLevelOrder {
@@ -146,6 +186,7 @@ export interface PriceLevelOrder {
   orderId: number;
   prevOrderId: number;
   nextOrderId: number;
+  maxSlippageBps: number;
 }
 
 /**
@@ -331,8 +372,8 @@ export class Exchange {
       shortOpenInterestLNS: result.shortOpenInterestLNS,
       fundingStartBlock: result.fundingStartBlock,
       fundingRatePct100k: result.fundingRatePct100k,
-      synthPerpPricePNS: result.synthPerpPricePNS,
-      paused: result.paused,
+      status: result.status,
+      paused: result.status === 0,
       basePricePNS: result.basePricePNS,
       maxBidPriceONS: result.maxBidPriceONS,
       minBidPriceONS: result.minBidPriceONS,
@@ -432,6 +473,7 @@ export class Exchange {
     orderId: number;
     prevOrderId: number;
     nextOrderId: number;
+    maxSlippageBps: number;
   }> {
     const result = (await this.publicClient.readContract({
       address: this.address,
@@ -451,6 +493,7 @@ export class Exchange {
       orderId: Number(result.orderId),
       prevOrderId: Number(result.prevOrderId),
       nextOrderId: Number(result.nextOrderId),
+      maxSlippageBps: Number(result.maxSlippageBps),
     };
   }
 
@@ -508,6 +551,7 @@ export class Exchange {
       orderId: Number(o.orderId),
       prevOrderId: Number(o.prevOrderId),
       nextOrderId: Number(o.nextOrderId),
+      maxSlippageBps: Number(o.maxSlippageBps),
     }));
 
     return { orders, numOrders };
@@ -586,6 +630,257 @@ export class Exchange {
     return orders;
   }
 
+  // ============ New Read Functions (rc_v1.1.7) ============
+
+  /**
+   * Get paginated positions for a perpetual
+   */
+  async getPositions(
+    perpId: bigint,
+    pageStartPositionId = 0n,
+    positionsPerPage = 100n,
+  ): Promise<{
+    positions: PositionInfo[];
+    numPositions: bigint;
+    refPricePNS: bigint;
+    refPriceStatus: number;
+  }> {
+    const [positionsRaw, numPositions, refPricePNS, refPriceStatus] =
+      (await this.publicClient.readContract({
+        address: this.address,
+        abi: ExchangeAbi,
+        functionName: "getPositions",
+        args: [perpId, pageStartPositionId, positionsPerPage],
+      })) as [any[], bigint, bigint, number];
+
+    const positions: PositionInfo[] = positionsRaw.map((p: any) => ({
+      accountId: p.accountId,
+      nextNodeId: p.nextNodeId,
+      prevNodeId: p.prevNodeId,
+      positionType: p.positionType as PositionType,
+      depositCNS: p.depositCNS,
+      pricePNS: p.pricePNS,
+      lotLNS: p.lotLNS,
+      entryBlock: p.entryBlock,
+      pnlCNS: p.pnlCNS,
+      deltaPnlCNS: p.deltaPnlCNS,
+      premiumPnlCNS: p.premiumPnlCNS,
+    }));
+
+    return { positions, numPositions, refPricePNS, refPriceStatus };
+  }
+
+  /**
+   * Get liquidation parameters for a perpetual
+   */
+  async getLiquidationInfo(perpId: bigint): Promise<LiquidationInfo> {
+    const result = (await this.publicClient.readContract({
+      address: this.address,
+      abi: ExchangeAbi,
+      functionName: "getLiquidationInfo",
+      args: [perpId],
+    })) as any;
+
+    return {
+      liqInsAmtPer100K: result.liqInsAmtPer100K,
+      liqUserAmtPer100K: result.liqUserAmtPer100K,
+      liqProtocolAmtPer100K: result.liqProtocolAmtPer100K,
+      btlPriceThreshPer100K: result.btlPriceThreshPer100K,
+      btlInsAmtPer100K: result.btlInsAmtPer100K,
+      btlUserAmtPer100K: result.btlUserAmtPer100K,
+      btlBuyerAmtPer100K: result.btlBuyerAmtPer100K,
+      btlProtocolAmtPer100K: result.btlProtocolAmtPer100K,
+      btlRestrictBuyers: result.btlRestrictBuyers,
+    };
+  }
+
+  /**
+   * Get margin fractions for a perpetual at a given lot size
+   */
+  async getMarginFractions(perpId: bigint, lotLNS: bigint): Promise<MarginFractions> {
+    const [
+      perpInitMarginFracHdths,
+      perpMaintMarginFracHdths,
+      dynamicInitMarginFracHdths,
+      oiMaxLNS,
+      unityDescentThreshHdths,
+      overColDescentThreshHdths,
+    ] = (await this.publicClient.readContract({
+      address: this.address,
+      abi: ExchangeAbi,
+      functionName: "getMarginFractions",
+      args: [perpId, lotLNS],
+    })) as [bigint, bigint, bigint, bigint, bigint, bigint];
+
+    return {
+      perpInitMarginFracHdths,
+      perpMaintMarginFracHdths,
+      dynamicInitMarginFracHdths,
+      oiMaxLNS,
+      unityDescentThreshHdths,
+      overColDescentThreshHdths,
+    };
+  }
+
+  /**
+   * Get funding interval in blocks
+   */
+  async getFundingInterval(): Promise<bigint> {
+    return this.publicClient.readContract({
+      address: this.address,
+      abi: ExchangeAbi,
+      functionName: "getFundingInterval",
+    }) as Promise<bigint>;
+  }
+
+  /**
+   * Get funding sum at a specific block
+   */
+  async getFundingSumAtBlock(
+    perpId: bigint,
+    blockNumber: bigint,
+  ): Promise<{ fundingSumPNS: bigint; fundingEventBlock: bigint }> {
+    const [fundingSumPNS, fundingEventBlock] = (await this.publicClient.readContract({
+      address: this.address,
+      abi: ExchangeAbi,
+      functionName: "getFundingSumAtBlock",
+      args: [perpId, blockNumber],
+    })) as unknown as [bigint, bigint];
+
+    return { fundingSumPNS, fundingEventBlock };
+  }
+
+  /**
+   * Get position ID range for a perpetual (linked list start/end)
+   */
+  async getPositionIds(perpId: bigint): Promise<{ startNodeId: bigint; endNodeId: bigint }> {
+    const [startNodeId, endNodeId] = (await this.publicClient.readContract({
+      address: this.address,
+      abi: ExchangeAbi,
+      functionName: "getPositionIds",
+      args: [perpId],
+    })) as [bigint, bigint];
+
+    return { startNodeId, endNodeId };
+  }
+
+  /**
+   * Get total number of accounts on the exchange
+   */
+  async numberOfAccounts(): Promise<bigint> {
+    return this.publicClient.readContract({
+      address: this.address,
+      abi: ExchangeAbi,
+      functionName: "numberOfAccounts",
+    }) as Promise<bigint>;
+  }
+
+  /**
+   * Get minimum collateral to open an account
+   */
+  async getMinAccountOpenCNS(): Promise<bigint> {
+    return this.publicClient.readContract({
+      address: this.address,
+      abi: ExchangeAbi,
+      functionName: "getMinAccountOpenCNS",
+    }) as Promise<bigint>;
+  }
+
+  /**
+   * Get minimum order post value
+   */
+  async getMinimumPostCNS(): Promise<bigint> {
+    return this.publicClient.readContract({
+      address: this.address,
+      abi: ExchangeAbi,
+      functionName: "getMinimumPostCNS",
+    }) as Promise<bigint>;
+  }
+
+  /**
+   * Get recycle fee amount
+   */
+  async getRecycleFeeCNS(): Promise<bigint> {
+    return this.publicClient.readContract({
+      address: this.address,
+      abi: ExchangeAbi,
+      functionName: "getRecycleFeeCNS",
+    }) as Promise<bigint>;
+  }
+
+  /**
+   * Check if the exchange is halted
+   */
+  async isHalted(): Promise<boolean> {
+    return this.publicClient.readContract({
+      address: this.address,
+      abi: ExchangeAbi,
+      functionName: "isHalted",
+    }) as Promise<boolean>;
+  }
+
+  /**
+   * Get order locks for an account
+   */
+  async getOrderLocks(accountId: bigint): Promise<OrderLock[]> {
+    const result = (await this.publicClient.readContract({
+      address: this.address,
+      abi: ExchangeAbi,
+      functionName: "getOrderLocks",
+      args: [accountId],
+    })) as any[];
+
+    return result.map((o: any) => ({
+      orderLockId: Number(o.orderLockId),
+      nextOrderLockId: Number(o.nextOrderLockId),
+      prevOrderLockId: Number(o.prevOrderLockId),
+      orderType: Number(o.orderType),
+      lotLNS: BigInt(o.lotLNS),
+      amountCNS: BigInt(o.amountCNS),
+    }));
+  }
+
+  /**
+   * Get order locks for an account on a specific perpetual
+   */
+  async getPerpOrderLocks(accountId: bigint, perpId: bigint): Promise<OrderLock[]> {
+    const result = (await this.publicClient.readContract({
+      address: this.address,
+      abi: ExchangeAbi,
+      functionName: "getPerpOrderLocks",
+      args: [accountId, perpId],
+    })) as any[];
+
+    return result.map((o: any) => ({
+      orderLockId: Number(o.orderLockId),
+      nextOrderLockId: Number(o.nextOrderLockId),
+      prevOrderLockId: Number(o.prevOrderLockId),
+      orderType: Number(o.orderType),
+      lotLNS: BigInt(o.lotLNS),
+      amountCNS: BigInt(o.amountCNS),
+    }));
+  }
+
+  /**
+   * Get withdraw allowance data
+   */
+  async getWithdrawAllowanceData(blockNumber: bigint): Promise<{
+    allowanceCNS: bigint;
+    expiryBlock: bigint;
+    lastAllowanceBlock: bigint;
+    cnsPerBlock: bigint;
+  }> {
+    const [allowanceCNS, expiryBlock, lastAllowanceBlock, cnsPerBlock] =
+      (await this.publicClient.readContract({
+        address: this.address,
+        abi: ExchangeAbi,
+        functionName: "getWithdrawAllowanceData",
+        args: [blockNumber],
+      })) as [bigint, bigint, bigint, bigint];
+
+    return { allowanceCNS, expiryBlock, lastAllowanceBlock, cnsPerBlock };
+  }
+
   // ============ Write Functions ============
   // These go through the DelegatedAccount if set
 
@@ -619,6 +914,7 @@ export class Exchange {
           leverageHdths: orderDesc.leverageHdths,
           lastExecutionBlock: orderDesc.lastExecutionBlock,
           amountCNS: orderDesc.amountCNS,
+          maxSlippageBps: orderDesc.maxSlippageBps,
         },
       ],
     });
@@ -661,6 +957,7 @@ export class Exchange {
           leverageHdths: od.leverageHdths,
           lastExecutionBlock: od.lastExecutionBlock,
           amountCNS: od.amountCNS,
+          maxSlippageBps: od.maxSlippageBps,
         })),
         revertOnFail,
       ],
@@ -728,7 +1025,11 @@ export class Exchange {
   /**
    * Request decrease position collateral (starts the timelock)
    */
-  async requestDecreasePositionCollateral(perpId: bigint): Promise<Hash> {
+  async requestDecreasePositionCollateral(
+    perpId: bigint,
+    amountCNS: bigint,
+    clampToMaximum = false,
+  ): Promise<Hash> {
     const walletClient = this.ensureWalletClient();
     const account = walletClient.account;
     if (!account) throw new Error("Wallet client must have an account");
@@ -738,7 +1039,7 @@ export class Exchange {
     const data = encodeFunctionData({
       abi: ExchangeAbi,
       functionName: "requestDecreasePositionCollateral",
-      args: [perpId],
+      args: [perpId, amountCNS, clampToMaximum],
     });
 
     return walletClient.sendTransaction({
@@ -754,8 +1055,10 @@ export class Exchange {
    */
   async decreasePositionCollateral(
     perpId: bigint,
-    amountCNS: bigint,
-    clampToMaximum = false
+    accountId: bigint,
+    impactAdjPricePNS: number,
+    borrowMarginFracHdths: number,
+    positionType: number,
   ): Promise<Hash> {
     const walletClient = this.ensureWalletClient();
     const account = walletClient.account;
@@ -766,7 +1069,7 @@ export class Exchange {
     const data = encodeFunctionData({
       abi: ExchangeAbi,
       functionName: "decreasePositionCollateral",
-      args: [perpId, amountCNS, clampToMaximum],
+      args: [perpId, accountId, impactAdjPricePNS, borrowMarginFracHdths, positionType],
     });
 
     return walletClient.sendTransaction({

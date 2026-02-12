@@ -15,7 +15,24 @@ import { getLastBatchOrders, clearLastBatchOrders, batchOpenPositions, setStopLo
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Compact system prompt — sent with every request, cached via cache_control
-const SYSTEM_PROMPT = `PerplBot: Perpl DEX terminal on Monad testnet. ONLY Perpl commands. Non-Perpl → "I only handle Perpl commands. Type **help** to see what I can do."
+// Built lazily so CHATBOT_SKIP_CONFIRMATION can be set before first request
+function getSystemPrompt(): string {
+  const tradeBlock = process.env.CHATBOT_SKIP_CONFIRMATION
+    ? `
+TRADE EXECUTION (TEST MODE — skip confirmation):
+When the user requests a trade, call open_position/close_position IMMEDIATELY. Do NOT ask for confirmation or show a preview. Execute the trade directly in the same turn.
+"at market" → call get_markets first for pricing, then immediately call open_position/close_position.
+`
+    : `
+TRADE CONFIRMATION (MANDATORY — no exceptions):
+1. User mentions a trade → NEVER call open_position/close_position. Only call get_markets (for "at market" pricing). Then show preview: "LONG 0.01 BTC @ $78,000 (5x limit) — Proceed? Reply \`long 0.01 btc at 78000 5x\` to confirm." ALWAYS include the full executable command in backticks.
+2. User re-enters the exact command → NOW call open_position/close_position. No re-confirm needed.
+3. "at market" → call get_markets. Set price as slippage limit: LONG = markPrice * 1.015 (max buy), SHORT = markPrice * 0.985 (min sell). Show preview with slippage price. Do NOT call open_position in the same turn. Confirmation must include is_market_order=true.
+After dry_run_trade → ask "Execute this trade?" On confirm → call open_position (no re-confirm).
+After simulate_strategy → ask "Place these N orders? Reply \`place orders\`." On confirm → batch_open_positions (no re-confirm).
+`;
+
+  return `PerplBot: Perpl DEX terminal on Monad testnet. ONLY Perpl commands. Non-Perpl → "I only handle Perpl commands. Type **help** to see what I can do."
 
 On "help", show EXACT list:
 **Portfolio**: \`show account\` \`show positions\` \`show markets\` \`show orders\`
@@ -29,17 +46,11 @@ CLI-only: deposit, withdraw
 Style: Concise. Tables for multi-row. $XX,XXX.XX for USD. Reports from analysis/sim tools display automatically — add 1-2 line takeaway only, never repeat report data.
 
 Rules: ALWAYS use tools, never guess. debug_transaction/simulate_strategy need Anvil.
-
-TRADE CONFIRMATION (MANDATORY — no exceptions):
-1. User mentions a trade → NEVER call open_position/close_position. Only call get_markets (for "at market" pricing). Then show preview: "LONG 0.01 BTC @ $78,000 (5x limit) — Proceed? Reply \`long 0.01 btc at 78000 5x\` to confirm." ALWAYS include the full executable command in backticks.
-2. User re-enters the exact command → NOW call open_position/close_position. No re-confirm needed.
-3. "at market" → call get_markets. Slippage: LONG +1-2% (max buy price), SHORT -1-2% (min sell price). Show preview with slippage price. Do NOT call open_position in the same turn. Confirmation must include is_market_order=true.
-After dry_run_trade → ask "Execute this trade?" On confirm → call open_position (no re-confirm).
-After simulate_strategy → ask "Place these N orders? Reply \`place orders\`." On confirm → batch_open_positions (no re-confirm).
-
+${tradeBlock}
 AFTER TRADE EXECUTION: Show result only. Do NOT call get_liquidation_analysis or any analysis tools after a trade. Only suggest \`debug <txHash>\` if txHash is present. "sl"→set_stop_loss, "tp"→set_take_profit.
 
 Markets: BTC=16 ETH=32 SOL=48 MON=64 ZEC=256. Collateral: AUSD (6 dec).`;
+}
 
 const MODEL = process.env.CHATBOT_MODEL || "claude-haiku-4-5-20251001";
 
@@ -363,7 +374,7 @@ async function streamWithToolLoop(
       system: [
         {
           type: "text",
-          text: SYSTEM_PROMPT,
+          text: getSystemPrompt(),
           cache_control: { type: "ephemeral" },
         },
       ],

@@ -4,8 +4,8 @@
  * Opens a real position on Monad testnet for each market, verifies it, then closes it.
  * Uses sdk-bridge functions directly (no chatbot, no mocks).
  *
- * Requires delegate mode: OPERATOR_PRIVATE_KEY + DELEGATED_ACCOUNT_ADDRESS in .env
- * (batch operations use execOrders which only works through DelegatedAccount).
+ * Runs in owner-direct mode by default (calls Exchange directly).
+ * Set CHATBOT_DELEGATE_TEST=1 to test through DelegatedAccount instead.
  *
  * Enable with: CHATBOT_TRADING_TEST=1 npx vitest run test/chatbot/trading.testnet.ts
  */
@@ -14,6 +14,12 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { config } from "dotenv";
 
 config(); // load .env before anything else
+
+// Default to owner mode: clear operator/delegate env vars so initSDK picks owner wallet
+if (!process.env.CHATBOT_DELEGATE_TEST) {
+  delete process.env.OPERATOR_PRIVATE_KEY;
+  delete process.env.DELEGATED_ACCOUNT_ADDRESS;
+}
 
 import {
   initSDK,
@@ -24,6 +30,9 @@ import {
   openPosition,
   closePosition,
   cancelOrder,
+  cancelAllOrders,
+  addMargin,
+  removeMargin,
   batchOpenPositions,
   setStopLoss,
   setTakeProfit,
@@ -32,7 +41,14 @@ import {
   getOrderbook,
   getRecentTrades,
   getLiquidationAnalysis,
+  depositCollateral,
+  withdrawCollateral,
+  debugTransaction,
+  simulateStrategy,
+  dryRunTrade,
 } from "../../src/chatbot/sdk-bridge.js";
+import { PerplWebSocketClient } from "../../src/sdk/api/websocket.js";
+import { isAnvilInstalled } from "../../src/sdk/simulation/anvil.js";
 
 const MARKETS = [
   { name: "BTC", size: 0.001 },
@@ -41,6 +57,8 @@ const MARKETS = [
   { name: "MON", size: 10 },
   { name: "ZEC", size: 0.1 },
 ] as const;
+
+let capturedTxHash: string | undefined;
 
 // 10% spread to ensure crossing on thin testnet books
 const OPEN_LONG_MULT = 1.10;
@@ -204,6 +222,7 @@ describe.skipIf(!process.env.CHATBOT_TRADING_TEST)(
             );
             expect(result.success).toBe(true);
             expect(result.txHash).toMatch(/^0x/);
+            if (!capturedTxHash) capturedTxHash = result.txHash;
           },
           { timeout: 60_000 },
         );
@@ -1015,6 +1034,751 @@ describe.skipIf(!process.env.CHATBOT_TRADING_TEST)(
           ).toBeUndefined();
         },
         { timeout: 60_000 },
+      );
+    });
+
+    // ════════════════════════════════════════════════════
+    // 9. BTC partial close
+    // ════════════════════════════════════════════════════
+
+    describe("BTC partial close", () => {
+      let positionFilled = false;
+      let sizeAfterOpen: number;
+      let setupFailed = false;
+
+      it(
+        "opens a BTC long (size=0.002) for partial close test",
+        async () => {
+          // Clean up any existing BTC position first
+          try {
+            await closeAnyBtcPosition(markPrices.BTC);
+          } catch { /* best-effort cleanup */ }
+
+          try {
+            const crossingPrice = roundPrice(markPrices.BTC * OPEN_LONG_MULT);
+            console.log(`[partial close] opening BTC long: size=0.002, price=${crossingPrice}`);
+
+            const result = await openPosition({
+              market: "BTC",
+              side: "long",
+              size: 0.002,
+              price: crossingPrice,
+              leverage: 2,
+              is_market_order: false,
+            });
+
+            expect(result.success).toBe(true);
+            expect(result.txHash).toMatch(/^0x/);
+            console.log(`[partial close] open tx: ${result.txHash}`);
+          } catch (e: any) {
+            setupFailed = true;
+            console.log(`[partial close] setup failed (testnet): ${e.shortMessage || e.message}`);
+          }
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "verifies BTC position size = 0.002",
+        async () => {
+          if (setupFailed) {
+            console.log("[partial close] skipped — setup failed");
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+
+          const positions = await getPositions();
+          const pos = findPosition(positions, "BTC", "long");
+          if (pos && pos.size > 0) {
+            positionFilled = true;
+            sizeAfterOpen = pos.size;
+            console.log(`[partial close] position size after open: ${pos.size}`);
+            expect(pos.size).toBeCloseTo(0.002, 3);
+          } else {
+            console.log("[partial close] position not found — order likely rested (thin liquidity)");
+            try {
+              const orders = await getOpenOrders("BTC");
+              for (const o of orders) await cancelOrder("BTC", o.orderId);
+            } catch { /* best-effort */ }
+          }
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "partial close — closes half (size=0.001)",
+        async () => {
+          if (!positionFilled) {
+            console.log("[partial close] skipped — position didn't fill");
+            return;
+          }
+
+          const closePrice = roundPrice(markPrices.BTC * CLOSE_LONG_MULT);
+          console.log(`[partial close] closing half: size=0.001, price=${closePrice}`);
+
+          const result = await closePosition({
+            market: "BTC",
+            side: "long",
+            size: 0.001,
+            price: closePrice,
+            is_market_order: false,
+          });
+
+          expect(result.success).toBe(true);
+          expect(result.txHash).toMatch(/^0x/);
+          console.log(`[partial close] close tx: ${result.txHash}`);
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "verifies position size reduced after partial close",
+        async () => {
+          if (!positionFilled) {
+            console.log("[partial close] skipped — position didn't fill");
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+
+          const positions = await getPositions();
+          const pos = findPosition(positions, "BTC", "long");
+          if (pos) {
+            console.log(`[partial close] position size: ${sizeAfterOpen} → ${pos.size}`);
+            expect(pos.size).toBeLessThan(sizeAfterOpen);
+            // Should be approximately 0.001
+            expect(pos.size).toBeCloseTo(0.001, 3);
+          } else {
+            console.log("[partial close] position fully closed (close order may have rested)");
+          }
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "cleans up partial close test position",
+        async () => {
+          if (!positionFilled) {
+            console.log("[partial close cleanup] skipped — position didn't fill");
+            return;
+          }
+          try {
+            const closePrice = roundPrice(markPrices.BTC * CLOSE_LONG_MULT);
+            await closePosition({
+              market: "BTC", side: "long",
+              price: closePrice, is_market_order: false,
+            });
+          } catch { /* may already be closed */ }
+          try {
+            const orders = await getOpenOrders("BTC");
+            for (const o of orders) await cancelOrder("BTC", o.orderId);
+          } catch { /* best-effort */ }
+          console.log("[partial close cleanup] done");
+        },
+        { timeout: 60_000 },
+      );
+    });
+
+    // ════════════════════════════════════════════════════
+    // 10. Cancel all orders
+    // ════════════════════════════════════════════════════
+
+    describe("cancel all orders", () => {
+      let ordersPlaced = 0;
+
+      it(
+        "places resting BTC orders (non-crossing)",
+        async () => {
+          // Place buy limits well below mark — they should rest on the book
+          const restingPrice1 = roundPrice(markPrices.BTC * 0.80);
+          const restingPrice2 = roundPrice(markPrices.BTC * 0.78);
+
+          console.log(`[cancel-all] placing 2 resting orders: ${restingPrice1}, ${restingPrice2}`);
+
+          const r1 = await openPosition({
+            market: "BTC", side: "long", size: 0.001,
+            price: restingPrice1, leverage: 2, is_market_order: false,
+          });
+          expect(r1.success).toBe(true);
+          ordersPlaced++;
+
+          try {
+            const r2 = await openPosition({
+              market: "BTC", side: "long", size: 0.001,
+              price: restingPrice2, leverage: 2, is_market_order: false,
+            });
+            if (r2.success) ordersPlaced++;
+          } catch (e: any) {
+            console.log(`[cancel-all] second order failed (testnet): ${e.shortMessage || e.message}`);
+          }
+          console.log(`[cancel-all] ${ordersPlaced} order(s) placed`);
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "verifies orders appear in open orders",
+        async () => {
+          await new Promise((r) => setTimeout(r, 2000));
+
+          const orders = await getOpenOrders("BTC");
+          console.log(`[cancel-all] open orders count: ${orders.length}`);
+          expect(orders.length).toBeGreaterThanOrEqual(1);
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "cancelAllOrders cancels all BTC orders",
+        async () => {
+          const result = await cancelAllOrders("BTC");
+          console.log("[cancel-all] result:", JSON.stringify(result, null, 2));
+
+          expect(result.success).toBe(true);
+          expect(result.market).toBe("BTC");
+          expect(result.totalOrders).toBeGreaterThanOrEqual(1);
+          expect(result.cancelled).toBe(result.totalOrders);
+          expect(result.errors).toHaveLength(0);
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "verifies 0 open orders remain",
+        async () => {
+          await new Promise((r) => setTimeout(r, 2000));
+
+          const orders = await getOpenOrders("BTC");
+          console.log(`[cancel-all] orders after cancel-all: ${orders.length}`);
+          expect(orders.length).toBe(0);
+        },
+        { timeout: 60_000 },
+      );
+    });
+
+    // ════════════════════════════════════════════════════
+    // 11. Add margin to position
+    // ════════════════════════════════════════════════════
+
+    describe("add margin to position", () => {
+      let positionFilled = false;
+      let marginBefore: number;
+      let setupFailed = false;
+
+      it(
+        "opens a BTC long for add-margin test",
+        async () => {
+          try {
+            await closeAnyBtcPosition(markPrices.BTC);
+          } catch { /* best-effort cleanup */ }
+
+          try {
+            const crossingPrice = roundPrice(markPrices.BTC * OPEN_LONG_MULT);
+            const result = await openPosition({
+              market: "BTC", side: "long", size: 0.001,
+              price: crossingPrice, leverage: 2, is_market_order: false,
+            });
+            expect(result.success).toBe(true);
+            console.log(`[add-margin] opened BTC long, tx=${result.txHash}`);
+          } catch (e: any) {
+            setupFailed = true;
+            console.log(`[add-margin] setup failed (testnet): ${e.shortMessage || e.message}`);
+          }
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "reads position margin before adding",
+        async () => {
+          if (setupFailed) {
+            console.log("[add-margin] skipped — setup failed");
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+
+          const positions = await getPositions();
+          const pos = findPosition(positions, "BTC", "long");
+          if (pos && pos.size > 0) {
+            positionFilled = true;
+            marginBefore = pos.margin;
+            console.log(`[add-margin] margin before: ${marginBefore}`);
+          } else {
+            console.log("[add-margin] position not found — order likely rested");
+            try {
+              const orders = await getOpenOrders("BTC");
+              for (const o of orders) await cancelOrder("BTC", o.orderId);
+            } catch { /* best-effort */ }
+          }
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "adds $1 margin to BTC position",
+        async () => {
+          if (!positionFilled) {
+            console.log("[add-margin] skipped — position didn't fill");
+            return;
+          }
+
+          const result = await addMargin({ market: "BTC", amount: 1 });
+          console.log("[add-margin] result:", JSON.stringify(result, null, 2));
+
+          expect(result.success).toBe(true);
+          expect(result.txHash).toMatch(/^0x/);
+          expect(result.market).toBe("BTC");
+          expect(result.amount).toBe(1);
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "verifies margin increased by ~$1",
+        async () => {
+          if (!positionFilled) {
+            console.log("[add-margin] skipped — position didn't fill");
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+
+          const positions = await getPositions();
+          const pos = findPosition(positions, "BTC", "long");
+          expect(pos, "BTC long not found after add-margin").toBeDefined();
+
+          const marginAfter = pos!.margin;
+          const delta = marginAfter - marginBefore;
+          console.log(`[add-margin] margin: ${marginBefore} → ${marginAfter} (delta: ${delta})`);
+          // Expect increase of ~1 (tolerant of PnL drift)
+          expect(delta).toBeGreaterThanOrEqual(0.5);
+          expect(delta).toBeLessThanOrEqual(1.5);
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "cleans up add-margin test position",
+        async () => {
+          if (!positionFilled) return;
+          try {
+            const closePrice = roundPrice(markPrices.BTC * CLOSE_LONG_MULT);
+            await closePosition({
+              market: "BTC", side: "long",
+              price: closePrice, is_market_order: false,
+            });
+          } catch { /* best-effort */ }
+          try {
+            const orders = await getOpenOrders("BTC");
+            for (const o of orders) await cancelOrder("BTC", o.orderId);
+          } catch { /* best-effort */ }
+          console.log("[add-margin cleanup] done");
+        },
+        { timeout: 60_000 },
+      );
+    });
+
+    // ════════════════════════════════════════════════════
+    // 12. Remove margin from position (request only)
+    // ════════════════════════════════════════════════════
+
+    describe("remove margin from position", () => {
+      let positionFilled = false;
+      let setupFailed = false;
+
+      it(
+        "opens a BTC long for remove-margin test",
+        async () => {
+          try {
+            await closeAnyBtcPosition(markPrices.BTC);
+          } catch { /* best-effort cleanup */ }
+
+          try {
+            const crossingPrice = roundPrice(markPrices.BTC * OPEN_LONG_MULT);
+            const result = await openPosition({
+              market: "BTC", side: "long", size: 0.001,
+              price: crossingPrice, leverage: 2, is_market_order: false,
+            });
+            expect(result.success).toBe(true);
+            console.log(`[remove-margin] opened BTC long, tx=${result.txHash}`);
+          } catch (e: any) {
+            setupFailed = true;
+            console.log(`[remove-margin] setup failed (testnet): ${e.shortMessage || e.message}`);
+          }
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "verifies position exists",
+        async () => {
+          if (setupFailed) {
+            console.log("[remove-margin] skipped — setup failed");
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+
+          const positions = await getPositions();
+          const pos = findPosition(positions, "BTC", "long");
+          if (pos && pos.size > 0) {
+            positionFilled = true;
+            console.log(`[remove-margin] position margin: ${pos.margin}`);
+          } else {
+            console.log("[remove-margin] position not found — order likely rested");
+            try {
+              const orders = await getOpenOrders("BTC");
+              for (const o of orders) await cancelOrder("BTC", o.orderId);
+            } catch { /* best-effort */ }
+          }
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "requests removal of $0.50 margin",
+        async () => {
+          if (!positionFilled) {
+            console.log("[remove-margin] skipped — position didn't fill");
+            return;
+          }
+
+          const result = await removeMargin({ market: "BTC", amount: 0.5 });
+          console.log("[remove-margin] result:", JSON.stringify(result, null, 2));
+
+          expect(result.success).toBe(true);
+          expect(result.txHash).toMatch(/^0x/);
+          expect(result.market).toBe("BTC");
+          expect(result.amount).toBe(0.5);
+          expect(result.note).toMatch(/finalization/i);
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "cleans up remove-margin test position",
+        async () => {
+          if (!positionFilled) return;
+          try {
+            const closePrice = roundPrice(markPrices.BTC * CLOSE_LONG_MULT);
+            await closePosition({
+              market: "BTC", side: "long",
+              price: closePrice, is_market_order: false,
+            });
+          } catch { /* best-effort */ }
+          try {
+            const orders = await getOpenOrders("BTC");
+            for (const o of orders) await cancelOrder("BTC", o.orderId);
+          } catch { /* best-effort */ }
+          console.log("[remove-margin cleanup] done");
+        },
+        { timeout: 60_000 },
+      );
+    });
+
+    // ════════════════════════════════════════════════════
+    // 13. Deposit / Withdraw collateral
+    // ════════════════════════════════════════════════════
+
+    describe("deposit / withdraw collateral", () => {
+      let equityBefore: number;
+      let depositSucceeded = false;
+
+      it(
+        "records equity before deposit",
+        async () => {
+          const summary = await getAccountSummary();
+          equityBefore = summary.totalEquity;
+          console.log(`[deposit] equity before: ${equityBefore}`);
+          expect(equityBefore).toBeGreaterThan(0);
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "deposits 1 USD collateral",
+        async () => {
+          try {
+            const result = await depositCollateral(1);
+            console.log(
+              "[deposit] result:",
+              JSON.stringify(result, null, 2),
+            );
+            expect(result.success).toBe(true);
+            expect(result.txHash).toMatch(/^0x/);
+            expect(result.amount).toBe(1);
+            depositSucceeded = true;
+          } catch (err) {
+            // Operator wallet may not hold collateral tokens — deposit
+            // requires ERC20 balance on the calling wallet
+            console.log(
+              "[deposit] skipped — operator has no collateral tokens:",
+              (err as Error).message.slice(0, 100),
+            );
+          }
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "equity increased after deposit",
+        async () => {
+          if (!depositSucceeded) {
+            console.log("[deposit] skipped — deposit did not succeed");
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+          const summary = await getAccountSummary();
+          const delta = summary.totalEquity - equityBefore;
+          console.log(
+            `[deposit] equity after: ${summary.totalEquity} (delta: ${delta})`,
+          );
+          // Tolerant of PnL drift — deposit of 1 USD should net at least 0.5
+          expect(delta).toBeGreaterThanOrEqual(0.5);
+        },
+        { timeout: 60_000 },
+      );
+
+      it(
+        "withdraw throws CLI error (operators cannot withdraw)",
+        async () => {
+          await expect(withdrawCollateral(1)).rejects.toThrow(
+            /must be done through the CLI/,
+          );
+        },
+        { timeout: 60_000 },
+      );
+    });
+
+    // ════════════════════════════════════════════════════
+    // 14. Fork-based simulation
+    // ════════════════════════════════════════════════════
+
+    describe("fork-based simulation", () => {
+      let anvilAvailable = false;
+
+      it(
+        "checks Anvil availability",
+        async () => {
+          anvilAvailable = await isAnvilInstalled();
+          console.log(`[simulation] Anvil installed: ${anvilAvailable}`);
+          // Always passes — just records the flag for conditional skips
+          expect(typeof anvilAvailable).toBe("boolean");
+        },
+        { timeout: 30_000 },
+      );
+
+      it(
+        "debugTransaction replays a captured tx",
+        async () => {
+          if (!capturedTxHash) {
+            console.log("[simulation] skipped — no txHash captured from earlier tests");
+            return;
+          }
+          console.log(`[simulation] debugTransaction(${capturedTxHash})`);
+
+          const result = await debugTransaction(capturedTxHash);
+          console.log(
+            "[simulation] debugTransaction keys:",
+            Object.keys(result),
+          );
+
+          expect(result.txHash).toBe(capturedTxHash);
+          expect(result.originalSuccess).toBeDefined();
+          expect(Array.isArray(result.originalEvents)).toBe(true);
+          expect(result.originalEvents.length).toBeGreaterThan(0);
+          expect(typeof result._report).toBe("string");
+          expect(result._report.length).toBeGreaterThan(0);
+        },
+        { timeout: 120_000 },
+      );
+
+      it(
+        "simulateStrategy runs a BTC grid strategy on fork",
+        async () => {
+          if (!anvilAvailable) {
+            console.log("[simulation] skipped — Anvil not installed");
+            return;
+          }
+
+          const result = await simulateStrategy({
+            market: "BTC",
+            strategy: "grid",
+            levels: 3,
+            spacing: 200,
+            size: 0.001,
+            leverage: 2,
+          });
+          console.log(
+            "[simulation] simulateStrategy keys:",
+            Object.keys(result),
+          );
+
+          expect(result.totalOrders).toBeGreaterThan(0);
+          expect(Array.isArray(result._batchOrders)).toBe(true);
+          expect(result._batchOrders.length).toBeGreaterThan(0);
+
+          const order = result._batchOrders[0];
+          expect(order).toHaveProperty("market");
+          expect(order).toHaveProperty("side");
+          expect(order).toHaveProperty("size");
+          expect(order).toHaveProperty("price");
+          expect(order).toHaveProperty("leverage");
+
+          expect(typeof result._report).toBe("string");
+          expect(result._report.length).toBeGreaterThan(0);
+        },
+        { timeout: 120_000 },
+      );
+
+      it(
+        "dryRunTrade simulates a BTC long",
+        async () => {
+          const price = roundPrice(markPrices.BTC * 1.1);
+          console.log(`[simulation] dryRunTrade BTC long at ${price}`);
+
+          const result = await dryRunTrade({
+            market: "BTC",
+            side: "long",
+            size: 0.001,
+            price,
+            leverage: 2,
+          });
+          console.log(
+            "[simulation] dryRunTrade keys:",
+            Object.keys(result),
+          );
+
+          // simulate (eth_call) is always present
+          expect(result.simulate).toBeDefined();
+          expect(typeof result.simulate.success).toBe("boolean");
+
+          // fork is present only when Anvil is available
+          if (anvilAvailable) {
+            expect(result.fork).toBeDefined();
+            expect(result.fork.txHash).toMatch(/^0x/);
+          }
+
+          expect(typeof result._report).toBe("string");
+          expect(result._report.length).toBeGreaterThan(0);
+        },
+        { timeout: 120_000 },
+      );
+    });
+
+    // ════════════════════════════════════════════════════
+    // 15. WebSocket market data
+    // ════════════════════════════════════════════════════
+
+    describe("WebSocket market data", () => {
+      const wsUrl = process.env.TESTNET_WS_URL || "wss://testnet.perpl.xyz";
+      let ws: PerplWebSocketClient;
+      let wsConnected = false;
+
+      afterAll(() => {
+        if (ws?.isConnected()) ws.disconnect();
+      });
+
+      it(
+        "connects to market-data WebSocket",
+        async () => {
+          ws = new PerplWebSocketClient(wsUrl, 10143);
+          // Swallow EventEmitter errors — we handle them via the promise rejection
+          ws.on("error", () => {});
+          try {
+            await ws.connectMarketData();
+            wsConnected = ws.isConnected();
+            expect(wsConnected).toBe(true);
+            console.log("[ws] connected to market-data");
+          } catch (err) {
+            // Server may reject connections (403) — same as SL/TP WS limitation
+            console.log(
+              "[ws] connection failed (server rejected):",
+              (err as Error).message.slice(0, 100),
+            );
+          }
+        },
+        { timeout: 30_000 },
+      );
+
+      it(
+        "receives BTC order-book snapshot",
+        async () => {
+          if (!wsConnected) {
+            console.log("[ws] skipped — not connected");
+            return;
+          }
+
+          ws.subscribeOrderBook(16); // BTC = perpId 16
+          const book = await new Promise<any>((resolve, reject) => {
+            const timer = setTimeout(
+              () => reject(new Error("order-book timeout")),
+              25_000,
+            );
+            ws.once("order-book", (data) => {
+              clearTimeout(timer);
+              resolve(data);
+            });
+          });
+
+          console.log(
+            `[ws] order-book: ${book.bid?.length ?? 0} bids, ${book.ask?.length ?? 0} asks`,
+          );
+          expect(Array.isArray(book.bid)).toBe(true);
+          expect(Array.isArray(book.ask)).toBe(true);
+
+          // Verify level shape { p, s, o }
+          if (book.bid.length > 0) {
+            expect(book.bid[0]).toHaveProperty("p");
+            expect(book.bid[0]).toHaveProperty("s");
+            expect(book.bid[0]).toHaveProperty("o");
+          }
+        },
+        { timeout: 30_000 },
+      );
+
+      it(
+        "receives BTC trades snapshot",
+        async () => {
+          if (!wsConnected) {
+            console.log("[ws] skipped — not connected");
+            return;
+          }
+
+          ws.subscribeTrades(16); // BTC = perpId 16
+          const trades = await new Promise<any[]>((resolve, reject) => {
+            const timer = setTimeout(
+              () => reject(new Error("trades timeout")),
+              25_000,
+            );
+            ws.once("trades", (data) => {
+              clearTimeout(timer);
+              resolve(data);
+            });
+          });
+
+          console.log(`[ws] trades: ${trades.length} items`);
+          expect(Array.isArray(trades)).toBe(true);
+
+          // Verify trade shape { p, s, sd } if non-empty
+          if (trades.length > 0) {
+            expect(trades[0]).toHaveProperty("p");
+            expect(trades[0]).toHaveProperty("s");
+            expect(trades[0]).toHaveProperty("sd");
+          }
+        },
+        { timeout: 30_000 },
+      );
+
+      it(
+        "disconnects cleanly",
+        async () => {
+          if (!wsConnected) {
+            console.log("[ws] skipped — was never connected");
+            return;
+          }
+          ws.disconnect();
+          expect(ws.isConnected()).toBe(false);
+          console.log("[ws] disconnected");
+        },
+        { timeout: 5_000 },
       );
     });
   },

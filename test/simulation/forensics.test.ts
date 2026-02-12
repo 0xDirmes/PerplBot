@@ -42,6 +42,7 @@ describe("Calldata decoding", () => {
       leverageHdths: leverageToHdths(10),
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
 
     const data = encodeFunctionData({
@@ -89,6 +90,7 @@ describe("Calldata decoding", () => {
         leverageHdths: 1000n,
         lastExecutionBlock: 0n,
         amountCNS: 0n,
+        maxSlippageBps: 0n,
       },
       {
         orderDescId: 0n,
@@ -105,6 +107,7 @@ describe("Calldata decoding", () => {
         leverageHdths: 500n,
         lastExecutionBlock: 0n,
         amountCNS: 0n,
+        maxSlippageBps: 0n,
       },
     ];
 
@@ -293,7 +296,7 @@ describe("Forensics report rendering", () => {
     shortOpenInterestLNS: 300000n,
     fundingStartBlock: 0n,
     fundingRatePct100k: 0,
-    synthPerpPricePNS: 0n,
+    status: 0,
     paused: false,
     basePricePNS: 900000n,
     maxBidPriceONS: 70500n,
@@ -332,6 +335,7 @@ describe("Forensics report rendering", () => {
           leverageHdths: 1000n,
           lastExecutionBlock: 0n,
           amountCNS: 0n,
+          maxSlippageBps: 0n,
         },
       },
       originalSuccess: true,
@@ -408,6 +412,7 @@ describe("Forensics report rendering", () => {
           leverageHdths: 1000n,
           lastExecutionBlock: 0n,
           amountCNS: 0n,
+          maxSlippageBps: 0n,
         },
       },
       originalSuccess: false,

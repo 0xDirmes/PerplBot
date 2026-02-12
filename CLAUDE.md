@@ -17,7 +17,7 @@ npm run build
 # Run CLI in development
 npm run dev -- <command>
 
-# Run tests (535+ tests)
+# Run tests (584+ tests)
 npm test
 
 # Run tests in watch mode
@@ -56,8 +56,8 @@ All contract addresses and RPC URLs default to Monad Testnet. Override with envi
 ```bash
 TESTNET_MODE=true  # Defaults to true (testnet only supported currently)
 TESTNET_RPC_URL=https://testnet-rpc.monad.xyz
-TESTNET_EXCHANGE_ADDRESS=0x9C216D1Ab3e0407b3d6F1d5e9EfFe6d01C326ab7
-TESTNET_COLLATERAL_TOKEN=0xdF5B718d8FcC173335185a2a1513eE8151e3c027
+TESTNET_EXCHANGE_ADDRESS=0x1964C32f0bE608E7D29302AFF5E61268E72080cc
+TESTNET_COLLATERAL_TOKEN=0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC
 TESTNET_CHAIN_ID=10143
 TESTNET_API_URL=https://testnet.perpl.xyz/api
 TESTNET_WS_URL=wss://testnet.perpl.xyz
@@ -70,7 +70,8 @@ PerplBot/
 ├── src/
 │   ├── sdk/                    # Core TypeScript SDK
 │   │   ├── contracts/          # Contract ABIs & wrappers
-│   │   │   ├── abi.ts          # All contract ABIs
+│   │   │   ├── abi.ts          # All contract ABIs (incl. 179 error defs)
+│   │   │   ├── errors.ts       # Error decoding utility
 │   │   │   ├── DelegatedAccount.ts
 │   │   │   └── Exchange.ts
 │   │   ├── wallet/             # Wallet management
@@ -118,6 +119,9 @@ PerplBot/
 │   │   └── ansi-text.ts        # HTML → plain text for reports
 │   └── index.ts                # Main entry point
 ├── test/                       # Test files
+│   ├── contracts/              # Contract wrapper tests
+│   │   ├── exchange-reads.test.ts # Exchange read method tests
+│   │   └── error-decode.test.ts   # Error decoding tests
 │   ├── api/                    # API client tests
 │   │   ├── client.test.ts      # REST API client tests
 │   │   └── websocket.test.ts   # WebSocket client tests
@@ -195,8 +199,8 @@ PerplBot/
 - **DelegatedAccount**: Smart contract that enforces access control and forwards calls to Exchange.
 
 ### Contract Addresses (Monad Testnet)
-- Exchange: `0x9C216D1Ab3e0407b3d6F1d5e9EfFe6d01C326ab7`
-- Collateral (USD stable): `0xdF5B718d8FcC173335185a2a1513eE8151e3c027`
+- Exchange: `0x1964C32f0bE608E7D29302AFF5E61268E72080cc`
+- Collateral (USD stable): `0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC`
 
 ### Perpetual IDs (from dex-sdk testnet config)
 - BTC: 16
@@ -405,7 +409,7 @@ The `/reviewer` skill performs comprehensive code review with a senior engineer 
 
 **Verification Gate:**
 - `npm run typecheck` passes
-- `npm test` passes (535+ tests)
+- `npm test` passes (584+ tests)
 - No P0 or P1 issues remain
 - "Would a staff engineer approve this?"
 

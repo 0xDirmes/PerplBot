@@ -44,7 +44,7 @@ export async function fetchMarketData(): Promise<MarketData[]> {
         fundingRate,
         longOI,
         shortOI,
-        paused: info.paused,
+        paused: info.status !== 0,
       });
     } catch {
       // Market doesn't exist or error fetching - skip

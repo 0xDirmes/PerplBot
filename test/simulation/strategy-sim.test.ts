@@ -32,6 +32,7 @@ const makeOrderDesc = (overrides?: Partial<OrderDesc>): OrderDesc => ({
   leverageHdths: leverageToHdths(2),
   lastExecutionBlock: 0n,
   amountCNS: 0n,
+  maxSlippageBps: 0n,
   ...overrides,
 });
 
@@ -47,7 +48,7 @@ const makePerpInfo = (overrides?: Partial<PerpetualInfo>): PerpetualInfo => ({
   shortOpenInterestLNS: 300000n,
   fundingStartBlock: 0n,
   fundingRatePct100k: 0,
-  synthPerpPricePNS: 0n,
+  status: 0,
   paused: false,
   basePricePNS: 900000n,
   maxBidPriceONS: 70500n,

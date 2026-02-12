@@ -118,6 +118,7 @@ export async function cancelOrder(
       leverageHdths: 0n,
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
 
     const txHash = await client.execOrder(orderDesc);
@@ -198,6 +199,7 @@ export async function cancelAllOrders(market: Market): Promise<{
       leverageHdths: 0n,
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
 
     try {

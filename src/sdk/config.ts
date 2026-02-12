@@ -54,9 +54,11 @@ export const TESTNET_MODE = process.env.TESTNET_MODE !== "false";
 export function getChainConfig(): ChainConfig {
   const rpcUrl = process.env.TESTNET_RPC_URL ?? "https://testnet-rpc.monad.xyz";
   const exchangeAddress = (process.env.TESTNET_EXCHANGE_ADDRESS ??
-    "0x9C216D1Ab3e0407b3d6F1d5e9EfFe6d01C326ab7") as Address;
+    process.env.EXCHANGE_ADDRESS ??
+    "0x1964C32f0bE608E7D29302AFF5E61268E72080cc") as Address;
   const collateralToken = (process.env.TESTNET_COLLATERAL_TOKEN ??
-    "0xdF5B718d8FcC173335185a2a1513eE8151e3c027") as Address;
+    process.env.COLLATERAL_TOKEN ??
+    "0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC") as Address;
 
   return {
     chain: monadTestnet,

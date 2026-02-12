@@ -15,6 +15,7 @@ import {
   pnsToPrice,
   lotToLNS,
   leverageToHdths,
+  amountToCNS,
   simulateTrade,
   printDryRunReport,
 } from "../sdk/index.js";
@@ -144,6 +145,7 @@ export function registerTradeCommand(program: Command): void {
         leverageHdths: leverageToHdths(leverage),
         lastExecutionBlock: 0n,
         amountCNS: 0n,
+        maxSlippageBps: 0n,
       };
 
       // Dry-run: simulate instead of sending
@@ -225,6 +227,7 @@ export function registerTradeCommand(program: Command): void {
         leverageHdths: 100n,
         lastExecutionBlock: 0n,
         amountCNS: 0n,
+        maxSlippageBps: 0n,
       };
 
       // Dry-run: simulate instead of sending
@@ -291,6 +294,7 @@ export function registerTradeCommand(program: Command): void {
         leverageHdths: 0n,
         lastExecutionBlock: 0n,
         amountCNS: 0n,
+        maxSlippageBps: 0n,
       };
 
       try {
@@ -357,6 +361,7 @@ export function registerTradeCommand(program: Command): void {
           leverageHdths: 0n,
           lastExecutionBlock: 0n,
           amountCNS: 0n,
+          maxSlippageBps: 0n,
         };
 
         try {
@@ -370,6 +375,81 @@ export function registerTradeCommand(program: Command): void {
       }
 
       console.log(`\nCancelled ${cancelled}/${orders.length} orders.`);
+    });
+
+  // Add margin to position
+  trade
+    .command("add-margin")
+    .description("Add margin to an existing position")
+    .requiredOption("--perp <name>", "Perpetual (btc, eth, sol, mon, zec)")
+    .requiredOption("--amount <amount>", "USD amount to add")
+    .action(async (options) => {
+      const config = loadEnvConfig();
+      validateOwnerConfig(config);
+
+      const owner = OwnerWallet.fromPrivateKey(
+        config.ownerPrivateKey,
+        config.chain
+      );
+
+      const exchange = new Exchange(
+        config.chain.exchangeAddress,
+        owner.publicClient,
+        owner.walletClient
+      );
+
+      const perpId = resolvePerpId(options.perp);
+      const amount = parseFloat(options.amount);
+      const amtCNS = amountToCNS(amount);
+
+      console.log(`Adding margin to ${options.perp.toUpperCase()} position...`);
+      console.log(`  Amount: $${amount}`);
+
+      try {
+        const txHash = await exchange.increasePositionCollateral(perpId, amtCNS);
+        console.log(`\nTransaction submitted: ${txHash}`);
+      } catch (error) {
+        console.error("Add margin failed:", error);
+        process.exit(1);
+      }
+    });
+
+  // Remove margin from position (request step)
+  trade
+    .command("remove-margin")
+    .description("Request margin removal from a position (2-step: request + finalize after timelock)")
+    .requiredOption("--perp <name>", "Perpetual (btc, eth, sol, mon, zec)")
+    .requiredOption("--amount <amount>", "USD amount to remove")
+    .action(async (options) => {
+      const config = loadEnvConfig();
+      validateOwnerConfig(config);
+
+      const owner = OwnerWallet.fromPrivateKey(
+        config.ownerPrivateKey,
+        config.chain
+      );
+
+      const exchange = new Exchange(
+        config.chain.exchangeAddress,
+        owner.publicClient,
+        owner.walletClient
+      );
+
+      const perpId = resolvePerpId(options.perp);
+      const amount = parseFloat(options.amount);
+      const amtCNS = amountToCNS(amount);
+
+      console.log(`Requesting margin removal from ${options.perp.toUpperCase()} position...`);
+      console.log(`  Amount: $${amount}`);
+
+      try {
+        const txHash = await exchange.requestDecreasePositionCollateral(perpId, amtCNS, true);
+        console.log(`\nRequest submitted: ${txHash}`);
+        console.log("Note: Finalization required after timelock period.");
+      } catch (error) {
+        console.error("Remove margin request failed:", error);
+        process.exit(1);
+      }
     });
 
   // Close all positions and cancel all orders
@@ -442,6 +522,7 @@ export function registerTradeCommand(program: Command): void {
                   leverageHdths: 0n,
                   lastExecutionBlock: 0n,
                   amountCNS: 0n,
+                  maxSlippageBps: 0n,
                 };
                 const txHash = await client.execOrder(cancelDesc);
                 console.log(`    Tx: ${txHash}`);
@@ -486,6 +567,7 @@ export function registerTradeCommand(program: Command): void {
                 leverageHdths: 100n,
                 lastExecutionBlock: 0n,
                 amountCNS: 0n,
+                maxSlippageBps: 0n,
               };
 
               const txHash = await client.execOrder(closeDesc);

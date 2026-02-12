@@ -71,6 +71,7 @@ export class OrderBuilder {
     maxMatches: 0n,
     lastExecutionBlock: 0n,
     amountCNS: 0n,
+    maxSlippageBps: 0n,
   };
 
   /**

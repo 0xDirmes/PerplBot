@@ -15,8 +15,8 @@ vi.mock("../../src/sdk/index.js", async (importOriginal) => {
       chain: {
         chain: { id: 10143, name: "monad-testnet" },
         rpcUrl: "https://testnet-rpc.monad.xyz",
-        exchangeAddress: "0x9C216D1Ab3e0407b3d6F1d5e9EfFe6d01C326ab7",
-        collateralToken: "0xdF5B718d8FcC173335185a2a1513eE8151e3c027",
+        exchangeAddress: "0x1964C32f0bE608E7D29302AFF5E61268E72080cc",
+        collateralToken: "0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC",
       },
     })),
     validateOwnerConfig: vi.fn(),

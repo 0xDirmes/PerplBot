@@ -38,6 +38,7 @@ describe("Dry-run report", () => {
     leverageHdths: leverageToHdths(10),
     lastExecutionBlock: 0n,
     amountCNS: 0n,
+    maxSlippageBps: 0n,
     ...overrides,
   });
 
@@ -237,7 +238,7 @@ describe("Dry-run report", () => {
     shortOpenInterestLNS: 300000n, // 3.00 lots
     fundingStartBlock: 0n,
     fundingRatePct100k: 0,
-    synthPerpPricePNS: 0n,
+    status: 0,
     paused: false,
     basePricePNS: 900000n, // base = 90,000.0
     maxBidPriceONS: 70500n, // 90000 + 7050 = 97,050.0
@@ -1098,7 +1099,7 @@ describe("PerpetualInfo orderbook fields", () => {
       shortOpenInterestLNS: 300000n,
       fundingStartBlock: 0n,
       fundingRatePct100k: 0,
-      synthPerpPricePNS: 0n,
+      status: 0,
       paused: false,
       basePricePNS: 900000n,
       maxBidPriceONS: 70500n,
@@ -1159,7 +1160,7 @@ describe("ForkResult perpInfo field", () => {
         shortOpenInterestLNS: 300000n,
         fundingStartBlock: 0n,
         fundingRatePct100k: 0,
-        synthPerpPricePNS: 0n,
+        status: 0,
         paused: false,
         basePricePNS: 900000n,
         maxBidPriceONS: 70500n,

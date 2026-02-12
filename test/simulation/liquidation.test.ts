@@ -50,7 +50,7 @@ function makePerpInfo(overrides: Partial<PerpetualInfo> = {}): PerpetualInfo {
     shortOpenInterestLNS: lotToLNS(45, 5n),
     fundingStartBlock: 0n,
     fundingRatePct100k: 3200,  // 0.032% per 8h
-    synthPerpPricePNS: 0n,
+    status: 0,
     paused: false,
     basePricePNS: 0n,
     maxBidPriceONS: 0n,

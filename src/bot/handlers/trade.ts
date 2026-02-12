@@ -154,6 +154,7 @@ async function executeTradeOwner(trade: ParsedTrade): Promise<{ success: boolean
       leverageHdths: leverageToHdths(trade.leverage ?? 1),
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
 
     const txHash = await client.execOrder(orderDesc);
@@ -227,6 +228,7 @@ async function executeTradeForUser(
       leverageHdths: leverageToHdths(trade.leverage ?? 1),
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
 
     const txHash = await client.execOrder(orderDesc);

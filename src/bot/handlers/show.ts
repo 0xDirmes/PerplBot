@@ -11,6 +11,7 @@ import {
   pnsToPrice,
   lnsToLot,
 } from "../../sdk/index.js";
+import { ExchangeAbi } from "../../sdk/contracts/abi.js";
 import type { Market } from "../../cli/tradeParser.js";
 import {
   formatOrderBook,
@@ -183,47 +184,7 @@ export async function fetchRecentTrades(market: Market, limit = 20): Promise<{
   // Get perpetual info for decimals
   const perpInfo = await publicClient.readContract({
     address: exchange,
-    abi: [{
-      type: "function",
-      name: "getPerpetualInfo",
-      inputs: [{ name: "perpId", type: "uint256" }],
-      outputs: [{
-        name: "perpetualInfo",
-        type: "tuple",
-        components: [
-          { name: "name", type: "string" },
-          { name: "symbol", type: "string" },
-          { name: "priceDecimals", type: "uint256" },
-          { name: "lotDecimals", type: "uint256" },
-          { name: "linkFeedId", type: "bytes32" },
-          { name: "priceTolPer100K", type: "uint256" },
-          { name: "refPriceMaxAgeSec", type: "uint256" },
-          { name: "positionBalanceCNS", type: "uint256" },
-          { name: "insuranceBalanceCNS", type: "uint256" },
-          { name: "markPNS", type: "uint256" },
-          { name: "markTimestamp", type: "uint256" },
-          { name: "lastPNS", type: "uint256" },
-          { name: "lastTimestamp", type: "uint256" },
-          { name: "oraclePNS", type: "uint256" },
-          { name: "oracleTimestampSec", type: "uint256" },
-          { name: "longOpenInterestLNS", type: "uint256" },
-          { name: "shortOpenInterestLNS", type: "uint256" },
-          { name: "fundingStartBlock", type: "uint256" },
-          { name: "fundingRatePct100k", type: "int16" },
-          { name: "synthPerpPricePNS", type: "uint256" },
-          { name: "absFundingClampPctPer100K", type: "uint256" },
-          { name: "paused", type: "bool" },
-          { name: "basePricePNS", type: "uint256" },
-          { name: "maxBidPriceONS", type: "uint256" },
-          { name: "minBidPriceONS", type: "uint256" },
-          { name: "maxAskPriceONS", type: "uint256" },
-          { name: "minAskPriceONS", type: "uint256" },
-          { name: "numOrders", type: "uint256" },
-          { name: "ignOracle", type: "bool" },
-        ],
-      }],
-      stateMutability: "view",
-    }],
+    abi: ExchangeAbi,
     functionName: "getPerpetualInfo",
     args: [perpId],
   }) as any;

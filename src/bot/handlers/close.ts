@@ -161,6 +161,7 @@ async function closePositionForAccount(
     leverageHdths: 100n,
     lastExecutionBlock: 0n,
     amountCNS: 0n,
+    maxSlippageBps: 0n,
   };
 
   const txHash = await client.execOrder(orderDesc);
@@ -296,6 +297,7 @@ async function closeAllForAccount(
             leverageHdths: 0n,
             lastExecutionBlock: 0n,
             amountCNS: 0n,
+            maxSlippageBps: 0n,
           };
           const txHash = await client.execOrder(cancelDesc);
           console.log(`[CLOSE] Order ${order.orderId} cancelled: ${txHash}`);
@@ -335,6 +337,7 @@ async function closeAllForAccount(
             leverageHdths: 100n,
             lastExecutionBlock: 0n,
             amountCNS: 0n,
+            maxSlippageBps: 0n,
           };
 
           const txHash = await client.execOrder(closeDesc);

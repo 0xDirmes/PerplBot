@@ -200,6 +200,8 @@ export enum OrderStatus {
   Cancelled = 5,
   Rejected = 6,
   Expired = 7,
+  Untriggered = 8,
+  Triggered = 9,
 }
 
 export enum OrderFlags {
@@ -237,6 +239,9 @@ export enum PositionStatus {
   Open = 1,
   Closed = 2,
   Liquidated = 3,
+  Deleveraged = 4,
+  Unwound = 5,
+  Failed = 6,
 }
 
 export enum PositionSide {

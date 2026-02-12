@@ -2,12 +2,14 @@
  * SDK Bridge — singleton SDK init + human-friendly wrapper methods
  * All methods return JSON-safe objects (no BigInt).
  *
- * Supports two modes:
- * 1. Operator mode: OPERATOR_PRIVATE_KEY + DELEGATED_ACCOUNT_ADDRESS set
- * 2. Owner mode: OWNER_PRIVATE_KEY set (direct Exchange access, like CLI trade.ts)
+ * Order routing (2-path, mode-agnostic):
+ *   Taker (market/IOC) → WebSocket API + submitAndVerify()
+ *   Maker (limit/resting) → on-chain exchange.execOrder()
+ *
+ * Init supports operator mode (DelegatedAccount) and owner mode (direct).
  */
 
-import { type Address, type Hash, createPublicClient, http, parseAbiItem, type PublicClient } from "viem";
+import { parseAbiItem, type Hash, type PublicClient } from "viem";
 import {
   loadEnvConfig,
   type EnvConfig,
@@ -15,7 +17,6 @@ import {
   Portfolio,
   OwnerWallet,
   Exchange,
-  HybridClient,
   PerplApiClient,
   PerplWebSocketClient,
   API_CONFIG,
@@ -41,7 +42,7 @@ import {
   type StrategySimConfig,
 } from "../sdk/index.js";
 import { OrderType, PositionType, type OrderDesc } from "../sdk/contracts/Exchange.js";
-import type { OrderRequest } from "../sdk/api/types.js";
+import { OrderStatus, type Order } from "../sdk/api/types.js";
 import { captureConsole, ansiToHtml } from "./ansi-html.js";
 
 // Singleton state
@@ -62,38 +63,79 @@ let wsClient: PerplWebSocketClient | undefined;
 let wsAccountId: number | undefined;
 
 /**
- * Submit a market order via WS API, then verify the fill on-chain.
- * WS submission is instant (no gas), on-chain verification confirms the fill.
+ * Submit via WS, then verify the fill.
+ * 1. Listen for WS "orders" event matched by requestId (fast path, ~1-3s)
+ * 2. Fall back to on-chain position polling after 3s if no WS event
+ * Total timeout: 10s
  */
-async function submitViaApiAndVerify(
-  request: Omit<OrderRequest, "mt">,
+async function submitAndVerify(
+  requestId: number,
   perpId: bigint,
-  preBefore: { lotLNS: bigint; positionType: number },
-): Promise<{ filled: boolean; txHash?: string }> {
+  prePosition: { lotLNS: bigint; positionType: number },
+  timeoutMs = 10_000,
+): Promise<{ filled: boolean; fillPrice?: number; fillSize?: number; txHash?: string; status: string }> {
   if (!wsClient) throw new Error("WebSocket not connected");
+  const ws = wsClient;
 
-  const rq = request.rq || Date.now();
-  wsClient.submitOrder({ ...request, rq });
-  console.log(`[api] Order submitted (requestId: ${rq}), verifying on-chain...`);
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (result: { filled: boolean; fillPrice?: number; fillSize?: number; txHash?: string; status: string }) => {
+      if (settled) return;
+      settled = true;
+      ws.off("orders", onOrders);
+      clearTimeout(totalTimer);
+      if (pollTimer) clearTimeout(pollTimer);
+      resolve(result);
+    };
 
-  // Poll on-chain position for up to 10 seconds to confirm fill
-  const accountSummary = await portfolio.getAccountSummary();
-  for (let i = 0; i < 10; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    try {
-      const { position } = await exchange.getPosition(perpId, accountSummary.accountId);
-      // Position changed = order filled
-      if (position.lotLNS !== preBefore.lotLNS || position.positionType !== preBefore.positionType) {
-        console.log(`[api] Fill confirmed on-chain after ${i + 1}s`);
-        return { filled: true };
+    // 1. WS "orders" listener — fast path
+    const onOrders = (orders: Order[]) => {
+      const match = orders.find(o => o.rq === requestId);
+      if (!match) return;
+
+      if (match.st === OrderStatus.Filled) {
+        console.log(`[ws] Order filled (requestId: ${requestId})`);
+        settle({
+          filled: true,
+          fillPrice: match.fp,
+          fillSize: match.fs,
+          txHash: match.at?.txid,
+          status: "filled",
+        });
+      } else if (match.st === OrderStatus.Rejected || match.st === OrderStatus.Cancelled) {
+        console.log(`[ws] Order ${OrderStatus[match.st]} (requestId: ${requestId}, reason: ${match.sr})`);
+        settle({ filled: false, status: OrderStatus[match.st].toLowerCase() });
       }
-    } catch {
-      // position query failed, keep polling
-    }
-  }
+      // Open/PartiallyFilled — keep listening
+    };
+    ws.on("orders", onOrders);
 
-  console.log(`[api] No fill detected after 10s`);
-  return { filled: false };
+    // 2. Fallback: on-chain polling after 3s (in case WS events don't arrive)
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    pollTimer = setTimeout(async () => {
+      console.log(`[api] No WS event after 3s, falling back to on-chain polling...`);
+      const accountSummary = await portfolio.getAccountSummary();
+      const remaining = timeoutMs - 3000;
+      const polls = Math.floor(remaining / 1000);
+      for (let i = 0; i < polls && !settled; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const { position } = await exchange.getPosition(perpId, accountSummary.accountId);
+          if (position.lotLNS !== prePosition.lotLNS || position.positionType !== prePosition.positionType) {
+            console.log(`[api] Fill confirmed on-chain after ${i + 4}s`);
+            settle({ filled: true, status: "filled" });
+            return;
+          }
+        } catch { /* keep polling */ }
+      }
+    }, 3000);
+
+    // 3. Total timeout
+    const totalTimer = setTimeout(() => {
+      console.log(`[api] No fill detected after ${timeoutMs / 1000}s`);
+      settle({ filled: false, status: "timeout" });
+    }, timeoutMs);
+  });
 }
 
 const PERP_NAMES: Record<string, bigint> = {
@@ -221,12 +263,6 @@ export async function initSDK(): Promise<void> {
   }
 }
 
-// ============ Helpers for executing orders ============
-
-async function execOrder(orderDesc: OrderDesc, nonce?: number): Promise<Hash> {
-  return exchange.execOrder(orderDesc, nonce);
-}
-
 // ============ Read-only methods ============
 
 export async function getAccountSummary() {
@@ -344,82 +380,57 @@ export async function openPosition(params: {
   price: number;
   leverage: number;
   is_market_order?: boolean;
-  nonce?: number;
 }) {
   const perpId = resolvePerpId(params.market);
   const perpInfo = await portfolio.getMarket(perpId);
   const priceDecimals = BigInt(perpInfo.priceDecimals);
   const lotLNS = lotToLNS(params.size, BigInt(perpInfo.lotDecimals));
   const leverageH = leverageToHdths(params.leverage);
+  const pricePNS = priceToPNS(params.price, priceDecimals);
 
-  // For market orders, auto-correct slippage direction if Claude got it wrong
-  let effectivePrice = params.price;
-  if (params.is_market_order) {
-    const markPrice = perpInfo.markPrice;
-    if (params.side === "long" && effectivePrice < markPrice * 0.95) {
-      // Long slippage price too low — recalculate: mark + 1.5%
-      effectivePrice = Math.round(markPrice * 1.015 * 100) / 100;
-    } else if (params.side === "short" && effectivePrice > markPrice * 1.05) {
-      // Short slippage price too high — recalculate: mark - 1.5%
-      effectivePrice = Math.round(markPrice * 0.985 * 100) / 100;
-    }
-  }
-  const pricePNS = priceToPNS(effectivePrice, priceDecimals);
-
-  let txHash: string;
-
-  if (mode === "operator" && operatorWallet) {
-    // Operator mode — use OperatorWallet methods (supports WS fast-path)
-    if (params.is_market_order) {
-      if (params.side === "long") {
-        txHash = String(await operatorWallet.marketOpenLong({ perpId, lotLNS, leverageHdths: leverageH, maxPricePNS: pricePNS }));
-      } else {
-        txHash = String(await operatorWallet.marketOpenShort({ perpId, lotLNS, leverageHdths: leverageH, minPricePNS: pricePNS }));
-      }
-    } else {
-      if (params.side === "long") {
-        txHash = await operatorWallet.openLong({ perpId, pricePNS, lotLNS, leverageHdths: leverageH, nonce: params.nonce });
-      } else {
-        txHash = await operatorWallet.openShort({ perpId, pricePNS, lotLNS, leverageHdths: leverageH, nonce: params.nonce });
-      }
-    }
-  } else if (params.is_market_order && wsClient && wsAccountId !== undefined) {
-    // Owner mode, market order → WS API (takes liquidity, faster matching)
-    // Capture pre-position state for on-chain verification
+  if (params.is_market_order && wsClient && wsAccountId !== undefined) {
+    // ── Taker → WS API (market/IOC, takes liquidity) ──
     const accountSummary = await portfolio.getAccountSummary();
     const { position: prePos } = await exchange.getPosition(perpId, accountSummary.accountId);
 
     const lastBlock = Number(await publicClient.getBlockNumber()) + 1000;
     const orderType = params.side === "long" ? 1 : 2; // OpenLong : OpenShort
-    const result = await submitViaApiAndVerify(
-      {
-        rq: Date.now(),
-        mkt: Number(perpId),
-        acc: wsAccountId,
-        t: orderType as never,
-        p: Number(pricePNS),
-        s: Number(lotLNS),
-        fl: 4 as never, // IOC
-        lv: Number(leverageH),
-        lb: lastBlock,
-      },
-      perpId,
-      { lotLNS: prePos.lotLNS, positionType: prePos.positionType },
-    );
+    const requestId = Date.now();
+
+    wsClient.submitOrder({
+      rq: requestId,
+      mkt: Number(perpId),
+      acc: wsAccountId,
+      t: orderType as never,
+      p: Number(pricePNS),
+      s: Number(lotLNS),
+      fl: 4 as never, // IOC
+      lv: Number(leverageH),
+      lb: lastBlock,
+    });
+    console.log(`[api] Order submitted (requestId: ${requestId}), verifying...`);
+
+    const result = await submitAndVerify(requestId, perpId, {
+      lotLNS: prePos.lotLNS,
+      positionType: prePos.positionType,
+    });
+
     return {
       success: result.filled,
       txHash: result.txHash,
-      status: result.filled ? "filled" : "no fill detected",
+      fillPrice: result.fillPrice,
+      fillSize: result.fillSize,
+      status: result.status,
       route: "api",
       market: params.market.toUpperCase(),
       side: params.side,
       size: params.size,
-      price: effectivePrice,
+      price: params.price,
       leverage: params.leverage,
       type: "market",
     };
   } else {
-    // Owner mode, limit order → on-chain SDK (adds liquidity to book)
+    // ── Maker → on-chain SDK (limit/resting, adds liquidity) ──
     const orderType = params.side === "long" ? OrderType.OpenLong : OrderType.OpenShort;
     const orderDesc: OrderDesc = {
       orderDescId: 0n,
@@ -436,20 +447,21 @@ export async function openPosition(params: {
       leverageHdths: leverageH,
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
-    txHash = await execOrder(orderDesc, params.nonce);
-  }
+    const txHash = await exchange.execOrder(orderDesc);
 
-  return {
-    success: true,
-    txHash,
-    market: params.market.toUpperCase(),
-    side: params.side,
-    size: params.size,
-    price: params.price,
-    leverage: params.leverage,
-    type: params.is_market_order ? "market" : "limit",
-  };
+    return {
+      success: true,
+      txHash,
+      market: params.market.toUpperCase(),
+      side: params.side,
+      size: params.size,
+      price: params.price,
+      leverage: params.leverage,
+      type: "limit",
+    };
+  }
 }
 
 export async function closePosition(params: {
@@ -472,15 +484,9 @@ export async function closePosition(params: {
     throw new Error(`No open position in ${params.market.toUpperCase()}`);
   }
 
-  // Use on-chain lot if no size given; otherwise convert user size
-  let rawLotLNS: bigint;
-  if (params.size) {
-    rawLotLNS = lotToLNS(params.size, lotDecimals);
-  } else {
-    rawLotLNS = position.lotLNS;
-  }
+  const rawLotLNS = params.size ? lotToLNS(params.size, lotDecimals) : position.lotLNS;
 
-  // Use on-chain position type (authoritative) — user/Claude may guess wrong side
+  // Use on-chain position type (authoritative)
   const isLong = position.positionType === PositionType.Long;
   let pricePNS: bigint;
   if (params.price) {
@@ -492,47 +498,39 @@ export async function closePosition(params: {
   }
 
   const isMarket = params.is_market_order !== false;
-  let txHash: string;
 
-  if (mode === "operator" && operatorWallet) {
-    if (isMarket) {
-      if (isLong) {
-        txHash = String(await operatorWallet.marketCloseLong({ perpId, lotLNS: rawLotLNS, minPricePNS: pricePNS }));
-      } else {
-        txHash = String(await operatorWallet.marketCloseShort({ perpId, lotLNS: rawLotLNS, maxPricePNS: pricePNS }));
-      }
-    } else {
-      if (isLong) {
-        txHash = await operatorWallet.closeLong({ perpId, pricePNS, lotLNS: rawLotLNS });
-      } else {
-        txHash = await operatorWallet.closeShort({ perpId, pricePNS, lotLNS: rawLotLNS });
-      }
-    }
-  } else if (isMarket && wsClient && wsAccountId !== undefined) {
-    // Owner mode, market close → WS API (takes liquidity, faster matching)
+  if (isMarket && wsClient && wsAccountId !== undefined) {
+    // ── Taker → WS API (market close, takes liquidity) ──
     const lastBlock = Number(await publicClient.getBlockNumber()) + 1000;
     const apiOrderType = isLong ? 3 : 4; // CloseLong : CloseShort
-    const result = await submitViaApiAndVerify(
-      {
-        rq: Date.now(),
-        mkt: Number(perpId),
-        acc: wsAccountId,
-        t: apiOrderType as never,
-        p: Number(pricePNS),
-        s: Number(rawLotLNS),
-        fl: 4 as never, // IOC
-        lv: 0,
-        lb: lastBlock,
-      },
-      perpId,
-      { lotLNS: position.lotLNS, positionType: position.positionType },
-    );
+    const requestId = Date.now();
+
+    wsClient.submitOrder({
+      rq: requestId,
+      mkt: Number(perpId),
+      acc: wsAccountId,
+      t: apiOrderType as never,
+      p: Number(pricePNS),
+      s: Number(rawLotLNS),
+      fl: 4 as never, // IOC
+      lv: 0,
+      lb: lastBlock,
+    });
+    console.log(`[api] Close order submitted (requestId: ${requestId}), verifying...`);
+
+    const result = await submitAndVerify(requestId, perpId, {
+      lotLNS: position.lotLNS,
+      positionType: position.positionType,
+    });
+
     const closedSize = Number(rawLotLNS) / Number(10n ** lotDecimals);
     const closePrice = Number(pricePNS) / Number(10n ** priceDecimals);
     return {
       success: result.filled,
       txHash: result.txHash,
-      status: result.filled ? "filled" : "no fill detected",
+      fillPrice: result.fillPrice,
+      fillSize: result.fillSize,
+      status: result.status,
       route: "api",
       market: params.market.toUpperCase(),
       side: isLong ? "long" : "short",
@@ -541,7 +539,7 @@ export async function closePosition(params: {
       type: "market",
     };
   } else {
-    // Owner mode, limit close → on-chain SDK (adds liquidity to book)
+    // ── Maker → on-chain SDK (limit close, adds liquidity) ──
     const orderType = isLong ? OrderType.CloseLong : OrderType.CloseShort;
     const orderDesc: OrderDesc = {
       orderDescId: 0n,
@@ -553,54 +551,50 @@ export async function closePosition(params: {
       expiryBlock: 0n,
       postOnly: false,
       fillOrKill: false,
-      immediateOrCancel: isMarket,
+      immediateOrCancel: false,
       maxMatches: 0n,
       leverageHdths: 100n,
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
-    txHash = await execOrder(orderDesc);
+    const txHash = await exchange.execOrder(orderDesc);
+
+    const closedSize = Number(rawLotLNS) / Number(10n ** lotDecimals);
+    const closePrice = Number(pricePNS) / Number(10n ** priceDecimals);
+    return {
+      success: true,
+      txHash,
+      market: params.market.toUpperCase(),
+      side: isLong ? "long" : "short",
+      size: closedSize,
+      price: closePrice,
+      type: "limit",
+    };
   }
-
-  const closedSize = Number(rawLotLNS) / Number(10n ** lotDecimals);
-  const closePrice = Number(pricePNS) / Number(10n ** priceDecimals);
-
-  return {
-    success: true,
-    txHash,
-    market: params.market.toUpperCase(),
-    side: isLong ? "long" : "short",
-    size: closedSize,
-    price: closePrice,
-    type: isMarket ? "market" : "limit",
-  };
 }
 
 export async function cancelOrder(market: string, orderId: string) {
   const perpId = resolvePerpId(market);
 
-  let txHash: string;
-  if (mode === "operator" && operatorWallet) {
-    txHash = await operatorWallet.cancelOrder(perpId, BigInt(orderId));
-  } else {
-    const orderDesc: OrderDesc = {
-      orderDescId: 0n,
-      perpId,
-      orderType: OrderType.Cancel,
-      orderId: BigInt(orderId),
-      pricePNS: 0n,
-      lotLNS: 0n,
-      expiryBlock: 0n,
-      postOnly: false,
-      fillOrKill: false,
-      immediateOrCancel: false,
-      maxMatches: 0n,
-      leverageHdths: 0n,
-      lastExecutionBlock: 0n,
-      amountCNS: 0n,
-    };
-    txHash = await execOrder(orderDesc);
-  }
+  const orderDesc: OrderDesc = {
+    orderDescId: 0n,
+    perpId,
+    orderType: OrderType.Cancel,
+    orderId: BigInt(orderId),
+    pricePNS: 0n,
+    lotLNS: 0n,
+    expiryBlock: 0n,
+    postOnly: false,
+    fillOrKill: false,
+    immediateOrCancel: false,
+    maxMatches: 0n,
+    leverageHdths: 0n,
+    lastExecutionBlock: 0n,
+    amountCNS: 0n,
+    maxSlippageBps: 0n,
+  };
+  const txHash = await exchange.execOrder(orderDesc);
 
   return {
     success: true,
@@ -617,33 +611,50 @@ export async function batchOpenPositions(orders: Array<{
   price: number;
   leverage: number;
 }>) {
-  // Fetch current nonce and manually increment per order to avoid mempool collisions
-  const nonce = await publicClient.getTransactionCount({
-    address: exchange.getSignerAddress(),
-    blockTag: "pending",
-  });
-  const results = [];
-  for (let i = 0; i < orders.length; i++) {
-    const order = orders[i];
-    try {
-      const result = await openPosition({ ...order, nonce: nonce + i });
-      results.push(result);
-    } catch (err) {
-      results.push({
-        success: false,
-        error: (err as Error).message,
-        market: order.market.toUpperCase(),
-        side: order.side,
-        size: order.size,
-        price: order.price,
-      });
-    }
+  // Build all OrderDescs and submit as a single on-chain tx
+  const orderDescs: OrderDesc[] = [];
+  const orderMeta: Array<{ market: string; side: string; size: number; price: number; leverage: number }> = [];
+
+  for (const order of orders) {
+    const perpId = resolvePerpId(order.market);
+    const perpInfo = await portfolio.getMarket(perpId);
+    const priceDecimals = BigInt(perpInfo.priceDecimals);
+    const lotDecimals = BigInt(perpInfo.lotDecimals);
+
+    orderDescs.push({
+      orderDescId: 0n,
+      perpId,
+      orderType: order.side === "long" ? OrderType.OpenLong : OrderType.OpenShort,
+      orderId: 0n,
+      pricePNS: priceToPNS(order.price, priceDecimals),
+      lotLNS: lotToLNS(order.size, lotDecimals),
+      expiryBlock: 0n,
+      postOnly: false,
+      fillOrKill: false,
+      immediateOrCancel: false,
+      maxMatches: 0n,
+      leverageHdths: leverageToHdths(order.leverage),
+      lastExecutionBlock: 0n,
+      amountCNS: 0n,
+      maxSlippageBps: 0n,
+    });
+    orderMeta.push({
+      market: order.market.toUpperCase(),
+      side: order.side,
+      size: order.size,
+      price: order.price,
+      leverage: order.leverage,
+    });
   }
+
+  const txHash = await exchange.execOrders(orderDescs, false);
+
   return {
     totalOrders: orders.length,
-    successful: results.filter((r) => r.success).length,
-    failed: results.filter((r) => !r.success).length,
-    results,
+    successful: orders.length,
+    failed: 0,
+    txHash,
+    results: orderMeta.map((m) => ({ success: true, txHash, ...m })),
   };
 }
 
@@ -721,6 +732,60 @@ async function placeTriggerOrder(params: {
   };
 }
 
+export async function addMargin(params: { market: string; amount: number }) {
+  const perpId = resolvePerpId(params.market);
+  const amountCNS = amountToCNS(params.amount);
+  const txHash = await exchange.increasePositionCollateral(perpId, amountCNS);
+  return { success: true, txHash, market: params.market.toUpperCase(), amount: params.amount };
+}
+
+export async function removeMargin(params: { market: string; amount: number }) {
+  const perpId = resolvePerpId(params.market);
+  const amountCNS = amountToCNS(params.amount);
+  const txHash = await exchange.requestDecreasePositionCollateral(perpId, amountCNS, true);
+  return {
+    success: true,
+    txHash,
+    market: params.market.toUpperCase(),
+    amount: params.amount,
+    note: "Decrease request submitted. Finalization required after timelock.",
+  };
+}
+
+export async function cancelAllOrders(market: string) {
+  const perpId = resolvePerpId(market);
+  const orders = await portfolio.getOpenOrders(perpId);
+
+  let cancelled = 0;
+  const errors: string[] = [];
+  for (const order of orders) {
+    try {
+      const orderDesc: OrderDesc = {
+        orderDescId: 0n,
+        perpId,
+        orderType: OrderType.Cancel,
+        orderId: order.orderId,
+        pricePNS: 0n,
+        lotLNS: 0n,
+        expiryBlock: 0n,
+        postOnly: false,
+        fillOrKill: false,
+        immediateOrCancel: false,
+        maxMatches: 0n,
+        leverageHdths: 0n,
+        lastExecutionBlock: 0n,
+        amountCNS: 0n,
+        maxSlippageBps: 0n,
+      };
+      await exchange.execOrder(orderDesc);
+      cancelled++;
+    } catch (e: any) {
+      errors.push(`Order ${order.orderId}: ${e.shortMessage || e.message}`);
+    }
+  }
+  return { success: true, market: market.toUpperCase(), totalOrders: orders.length, cancelled, errors };
+}
+
 export async function depositCollateral(amount: number) {
   const amountCNS = amountToCNS(amount);
   const txHash = await exchange.depositCollateral(amountCNS);
@@ -781,7 +846,7 @@ export async function getTradingFees(market: string) {
 // ============ Orderbook (extracted from CLI show.ts) ============
 
 const orderRequestEvent = parseAbiItem(
-  "event OrderRequest(uint256 perpId, uint256 accountId, uint256 orderDescId, uint256 orderId, uint8 orderType, uint256 pricePNS, uint256 lotLNS, uint256 expiryBlock, bool postOnly, bool fillOrKill, bool immediateOrCancel, uint256 maxMatches, uint256 leverageHdths, uint256 gasLeft)",
+  "event OrderRequest(uint256 perpId, uint256 accountId, uint256 orderDescId, uint256 orderId, uint8 orderType, uint256 pricePNS, uint256 lotLNS, uint256 expiryBlock, bool postOnly, bool fillOrKill, bool immediateOrCancel, uint256 maxMatches, uint256 leverageHdths, uint256 lastExecutionBlock, uint256 amountCNS, uint256 maxSlippageBps, uint256 gasLeft)",
 );
 const orderPlacedEvent = parseAbiItem(
   "event OrderPlaced(uint256 orderId, uint256 lotLNS, uint256 lockedBalanceCNS, int256 amountCNS, uint256 balanceCNS)",
@@ -1029,6 +1094,7 @@ export async function dryRunTrade(params: {
     leverageHdths: leverageToHdths(params.leverage),
     lastExecutionBlock: 0n,
     amountCNS: 0n,
+    maxSlippageBps: 0n,
   };
 
   const result = await simulateTrade(envConfig, orderDesc);

@@ -180,6 +180,7 @@ describe("HybridClient", () => {
         leverageHdths: 0n,
         lastExecutionBlock: 0n,
         amountCNS: 0n,
+        maxSlippageBps: 0n,
       };
 
       const txHash = await client.execOrder(orderDesc);

@@ -167,7 +167,7 @@ export class Portfolio {
           fundingRate: Number(info.fundingRatePct100k) / 1000, // Convert to percentage
           longOpenInterest: lnsToLot(info.longOpenInterestLNS, info.lotDecimals),
           shortOpenInterest: lnsToLot(info.shortOpenInterestLNS, info.lotDecimals),
-          paused: info.paused,
+          paused: info.status !== 0,
         });
       } catch {
         // Perpetual doesn't exist, skip
@@ -193,7 +193,7 @@ export class Portfolio {
       fundingRate: Number(info.fundingRatePct100k) / 1000,
       longOpenInterest: lnsToLot(info.longOpenInterestLNS, info.lotDecimals),
       shortOpenInterest: lnsToLot(info.shortOpenInterestLNS, info.lotDecimals),
-      paused: info.paused,
+      paused: info.status !== 0,
     };
   }
 
@@ -280,62 +280,61 @@ export class Portfolio {
   }
 
   /**
-   * Get positions from contract (N+1 queries)
+   * Get positions from contract (parallel queries)
    * @internal
    */
   private async getPositionsFromContract(perpIds: bigint[]): Promise<PositionDisplay[]> {
     const accountId = this.ensureAccountId();
-    const positions: PositionDisplay[] = [];
 
-    for (const perpId of perpIds) {
-      try {
-        const { position, markPrice } = await this.exchange.getPosition(
-          perpId,
-          accountId
-        );
+    // Fetch all positions in parallel instead of sequentially
+    const results = await Promise.all(
+      perpIds.map(async (perpId) => {
+        try {
+          const { position, markPrice } = await this.exchange.getPosition(
+            perpId,
+            accountId
+          );
 
-        if (position.lotLNS === 0n) {
-          continue;
+          if (position.lotLNS === 0n) return null;
+
+          const perpInfo = await this.exchange.getPerpetualInfo(perpId);
+          const priceDecimals = perpInfo.priceDecimals;
+          const lotDecimals = perpInfo.lotDecimals;
+
+          const size = lnsToLot(position.lotLNS, lotDecimals);
+          const entryPrice = pnsToPrice(position.pricePNS, priceDecimals);
+          const currentPrice = pnsToPrice(markPrice, priceDecimals);
+          const margin = cnsToAmount(position.depositCNS);
+
+          const notional = entryPrice * size;
+          const currentNotional = currentPrice * size;
+          const isLong = position.positionType === PositionType.Long;
+          const unrealizedPnl = isLong
+            ? currentNotional - notional
+            : notional - currentNotional;
+
+          const unrealizedPnlPercent = (unrealizedPnl / margin) * 100;
+          const leverage = notional / margin;
+
+          return {
+            perpId,
+            symbol: perpInfo.symbol,
+            side: isLong ? "long" : ("short" as const),
+            size,
+            entryPrice,
+            markPrice: currentPrice,
+            unrealizedPnl,
+            unrealizedPnlPercent,
+            margin,
+            leverage,
+          } satisfies PositionDisplay;
+        } catch {
+          return null;
         }
+      }),
+    );
 
-        const perpInfo = await this.exchange.getPerpetualInfo(perpId);
-        const priceDecimals = perpInfo.priceDecimals;
-        const lotDecimals = perpInfo.lotDecimals;
-
-        const size = lnsToLot(position.lotLNS, lotDecimals);
-        const entryPrice = pnsToPrice(position.pricePNS, priceDecimals);
-        const currentPrice = pnsToPrice(markPrice, priceDecimals);
-        const margin = cnsToAmount(position.depositCNS);
-
-        // Calculate unrealized PnL
-        const notional = entryPrice * size;
-        const currentNotional = currentPrice * size;
-        const isLong = position.positionType === PositionType.Long;
-        const unrealizedPnl = isLong
-          ? currentNotional - notional
-          : notional - currentNotional;
-
-        const unrealizedPnlPercent = (unrealizedPnl / margin) * 100;
-        const leverage = notional / margin;
-
-        positions.push({
-          perpId,
-          symbol: perpInfo.symbol,
-          side: isLong ? "long" : "short",
-          size,
-          entryPrice,
-          markPrice: currentPrice,
-          unrealizedPnl,
-          unrealizedPnlPercent,
-          margin,
-          leverage,
-        });
-      } catch {
-        // Skip errors
-      }
-    }
-
-    return positions;
+    return results.filter((p): p is PositionDisplay => p !== null);
   }
 
   /**

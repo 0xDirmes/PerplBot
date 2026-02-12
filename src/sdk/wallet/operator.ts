@@ -245,6 +245,7 @@ export class OperatorWallet {
       leverageHdths: params.leverageHdths,
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
 
     return this.execOrder(orderDesc, params.nonce);
@@ -279,6 +280,7 @@ export class OperatorWallet {
       leverageHdths: params.leverageHdths,
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
 
     return this.execOrder(orderDesc, params.nonce);
@@ -311,6 +313,7 @@ export class OperatorWallet {
       leverageHdths: 100n, // Not used for close
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
 
     return this.execOrder(orderDesc);
@@ -343,6 +346,7 @@ export class OperatorWallet {
       leverageHdths: 100n, // Not used for close
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
 
     return this.execOrder(orderDesc);
@@ -367,6 +371,7 @@ export class OperatorWallet {
       leverageHdths: 0n,
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
 
     return this.execOrder(orderDesc);
@@ -399,6 +404,7 @@ export class OperatorWallet {
       leverageHdths: params.leverageHdths ?? 100n,
       lastExecutionBlock: 0n,
       amountCNS: 0n,
+      maxSlippageBps: 0n,
     };
 
     return this.execOrder(orderDesc);
@@ -424,8 +430,12 @@ export class OperatorWallet {
   /**
    * Request decrease position collateral
    */
-  async requestDecreasePositionCollateral(perpId: bigint): Promise<Hash> {
-    return this.getExchange().requestDecreasePositionCollateral(perpId);
+  async requestDecreasePositionCollateral(
+    perpId: bigint,
+    amountCNS: bigint,
+    clampToMaximum = false,
+  ): Promise<Hash> {
+    return this.getExchange().requestDecreasePositionCollateral(perpId, amountCNS, clampToMaximum);
   }
 
   /**
@@ -433,13 +443,17 @@ export class OperatorWallet {
    */
   async decreasePositionCollateral(
     perpId: bigint,
-    amountCNS: bigint,
-    clampToMaximum = false
+    accountId: bigint,
+    impactAdjPricePNS: number,
+    borrowMarginFracHdths: number,
+    positionType: number,
   ): Promise<Hash> {
     return this.getExchange().decreasePositionCollateral(
       perpId,
-      amountCNS,
-      clampToMaximum
+      accountId,
+      impactAdjPricePNS,
+      borrowMarginFracHdths,
+      positionType,
     );
   }
 
