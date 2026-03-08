@@ -276,6 +276,21 @@ describe("PerplWebSocketClient", () => {
       expect(handler).toHaveBeenCalledWith(state);
     });
 
+    it("emits funding-update on MarketFundingUpdate (mt: 10)", async () => {
+      const connectPromise = wsClient.connectMarketData();
+      await vi.runOnlyPendingTimersAsync();
+      await connectPromise;
+
+      const handler = vi.fn();
+      wsClient.on("funding-update", handler);
+
+      const mockWs = (wsClient as any).ws;
+      const fundingData = { 16: { rate: 500, ts: 1234567890 } };
+      mockWs.emit("message", Buffer.from(JSON.stringify({ mt: 10, d: fundingData })));
+
+      expect(handler).toHaveBeenCalledWith(fundingData);
+    });
+
     it("emits heartbeat on Heartbeat (mt: 100)", async () => {
       const connectPromise = wsClient.connectMarketData();
       await vi.runOnlyPendingTimersAsync();

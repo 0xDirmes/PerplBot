@@ -32,6 +32,7 @@ export interface WebSocketClientEvents {
   "order-book": [book: L2Book];
   trades: [trades: Trade[]];
   "market-state": [state: Record<number, ApiMarketState | undefined>];
+  "funding-update": [data: Record<string, unknown>];
   wallet: [accounts: WalletAccount[]];
   positions: [positions: Position[]];
   orders: [orders: Order[]];
@@ -378,6 +379,10 @@ export class PerplWebSocketClient extends EventEmitter {
 
       case 9: // MarketStateUpdate
         this.emit("market-state", (msg as any).d);
+        break;
+
+      case 10: // MarketFundingUpdate
+        this.emit("funding-update", (msg as any).d);
         break;
 
       case 19: // WalletSnapshot
