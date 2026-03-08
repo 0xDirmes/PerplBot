@@ -247,7 +247,9 @@ export class Wallet {
           lastBlock: lastBlock + 100,
           flags: toWsFlags(params),
         });
-      } catch { /* fall through to RPC */ }
+      } catch (err) {
+        console.warn("[wallet] openLong WS failed, falling back to RPC:", (err as Error).message);
+      }
     }
 
     const orderDesc: OrderDesc = {
@@ -298,7 +300,9 @@ export class Wallet {
           lastBlock: lastBlock + 100,
           flags: toWsFlags(params),
         });
-      } catch { /* fall through to RPC */ }
+      } catch (err) {
+        console.warn("[wallet] openShort WS failed, falling back to RPC:", (err as Error).message);
+      }
     }
 
     const orderDesc: OrderDesc = {
@@ -348,7 +352,9 @@ export class Wallet {
           lastBlock: lastBlock + 100,
           flags: toWsFlags(params),
         });
-      } catch { /* fall through to RPC */ }
+      } catch (err) {
+        console.warn("[wallet] closeLong WS failed, falling back to RPC:", (err as Error).message);
+      }
     }
 
     const orderDesc: OrderDesc = {
@@ -398,7 +404,9 @@ export class Wallet {
           lastBlock: lastBlock + 100,
           flags: toWsFlags(params),
         });
-      } catch { /* fall through to RPC */ }
+      } catch (err) {
+        console.warn("[wallet] closeShort WS failed, falling back to RPC:", (err as Error).message);
+      }
     }
 
     const orderDesc: OrderDesc = {
@@ -436,7 +444,9 @@ export class Wallet {
           Number(orderId),
           lastBlock + 100,
         );
-      } catch { /* fall through to RPC */ }
+      } catch (err) {
+        console.warn("[wallet] cancelOrder WS failed, falling back to RPC:", (err as Error).message);
+      }
     }
 
     const orderDesc: OrderDesc = {
@@ -486,7 +496,9 @@ export class Wallet {
           lastBlock: lastBlock + 100,
           flags: params.postOnly ? OrderFlags.PostOnly : OrderFlags.GoodTillCancel,
         });
-      } catch { /* fall through to RPC */ }
+      } catch (err) {
+        console.warn("[wallet] modifyOrder WS failed, falling back to RPC:", (err as Error).message);
+      }
     }
 
     const orderDesc: OrderDesc = {
