@@ -1,7 +1,7 @@
 ---
 title: "feat: Delta-Neutral Funding Rate Carry Bot (AUSD/BTC)"
 type: feat
-status: active
+status: implemented
 date: 2026-03-07
 deepened: 2026-03-07
 brainstorm: docs/brainstorms/2026-03-07-carry-bot-brainstorm.md
@@ -582,31 +582,31 @@ Bearer token from env var, checked on every POST. Bind to `127.0.0.1` only.
 
 ### Functional Requirements
 
-- [ ] Bot monitors BTC funding rate and enters carry when rate > 5% APY for 3 consecutive periods
-- [ ] Entry uses interleaved TWAP (perp chunk → spot chunk alternating, $50k chunks)
-- [ ] Every trade verifies tx receipt before proceeding to next step
-- [ ] Bot maintains delta neutrality by rebalancing when drift > 2%
-- [ ] Bot exits when funding < 1% APY, drawdown > 5%, or manual stop
-- [ ] State persists to SQLite (TEXT for financials, WAL mode, FULL sync)
-- [ ] Crash recovery reconciles DB state against on-chain positions using state matrix
-- [ ] Entry failure on spot leg triggers automatic perp unwind
+- [x] Bot monitors BTC funding rate and enters carry when rate > 5% APY for 3 consecutive periods
+- [x] Entry uses interleaved TWAP (perp chunk → spot chunk alternating, $50k chunks)
+- [x] Every trade verifies tx receipt before proceeding to next step
+- [x] Bot maintains delta neutrality by rebalancing when drift > 2%
+- [x] Bot exits when funding < 1% APY, drawdown > 5%, or manual stop
+- [x] State persists to SQLite (TEXT for financials, WAL mode, FULL sync)
+- [x] Crash recovery reconciles DB state against on-chain positions using state matrix
+- [x] Entry failure on spot leg triggers automatic perp unwind
 
 ### Non-Functional Requirements
 
-- [ ] Handles >$500k capital deployment safely
-- [ ] Interleaved TWAP keeps peak unhedged exposure < $50k (one chunk)
-- [ ] Swap deadline always set (block.timestamp + 120s, never optional)
-- [ ] Swap recipient hardcoded to self (not caller-configurable)
-- [ ] `isHalted()` and `markPriceValid` checked before every trade
-- [ ] All trades and state changes logged with structured logging
+- [x] Handles >$500k capital deployment safely
+- [x] Interleaved TWAP keeps peak unhedged exposure < $50k (one chunk)
+- [x] Swap deadline always set (block.timestamp + 120s, never optional)
+- [x] Swap recipient hardcoded to self (not caller-configurable)
+- [x] `isHalted()` and `markPriceValid` checked before every trade
+- [x] All trades and state changes logged with structured logging
 
 ### Quality Gates
 
-- [ ] Unit tests for: carry state machine, TWAP chunking, Uniswap client, state persistence, reconciliation
+- [x] Unit tests for: carry state machine, TWAP chunking, Uniswap client, state persistence, reconciliation
 - [ ] Integration test: full entry/exit cycle on Monad testnet
-- [ ] Config validation passes (8 fields)
-- [ ] `npm run typecheck` passes
-- [ ] `npm test` passes
+- [x] Config validation passes (8 fields)
+- [x] `npm run typecheck` passes
+- [x] `npm test` passes
 
 ---
 
