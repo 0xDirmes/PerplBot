@@ -729,20 +729,23 @@ export class CarryStrategy {
         }
         break;
 
-      case "entering":
-        if (this.state!.perpLegComplete && !this.state!.spotLegComplete) {
+      case "entering": {
+        const enterState = this.state!; // Non-null: loadState() only returns non-idle phases
+        if (enterState.perpLegComplete && !enterState.spotLegComplete) {
           if (hasPerp && !hasSpot) {
             console.log("[carry] Crash during entry (perp done, spot pending). Unwinding perp.");
             await this.unwindPerp();
             this.transitionToIdle();
           }
-        } else if (!this.state!.perpLegComplete) {
+        } else if (!enterState.perpLegComplete) {
           console.log("[carry] Crash during entry (perp not done). Transitioning to idle.");
           this.transitionToIdle();
         }
         break;
+      }
 
-      case "active":
+      case "active": {
+        const activeState = this.state!; // Non-null: loadState() only returns non-idle phases
         if (hasPerp && hasSpot) {
           console.log("[carry] Resuming active position.");
           // State is fine, continue
@@ -756,7 +759,7 @@ export class CarryStrategy {
           } catch (err) {
             console.error("[carry] Failed to sell WBTC:", err);
           }
-          this.stateStore.markClosed(this.state!.id, this.state!.fundingEarnedCns);
+          this.stateStore.markClosed(activeState.id, activeState.fundingEarnedCns);
           this.state = null;
         } else if (hasPerp && !hasSpot) {
           console.error("[carry] ALERT: WBTC missing. Manual intervention required.");
@@ -768,10 +771,11 @@ export class CarryStrategy {
         } else {
           // Neither — both closed somehow
           console.log("[carry] Both legs closed. Marking as closed.");
-          this.stateStore.markClosed(this.state!.id, this.state!.fundingEarnedCns);
+          this.stateStore.markClosed(activeState.id, activeState.fundingEarnedCns);
           this.state = null;
         }
         break;
+      }
 
       case "exiting":
         console.log("[carry] Resuming exit...");

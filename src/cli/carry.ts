@@ -187,7 +187,7 @@ export function registerCarryCommand(program: Command): void {
           perpId,
           spotTokenIn: UNISWAP_MONAD_ADDRESSES.ausd,
           spotTokenOut: UNISWAP_MONAD_ADDRESSES.wbtc,
-          totalCapitalAusd: 0, // Not used for status
+          totalCapitalAusd: 1, // Dummy value — only getMetrics() is called
           perpLeverage: 2,
           minFundingRateApy: 0.05,
           exitFundingRateApy: 0.01,
