@@ -721,7 +721,12 @@ export class CarryStrategy {
         });
         this.state = this.stateStore.loadState();
       } catch (err) {
-        console.error("[carry] Rebalance failed:", err);
+        throw new CarryError(
+          `Rebalance failed: ${err instanceof Error ? err.message : String(err)}`,
+          "REBALANCE_FAILED",
+          true, // Recoverable — will retry on next active loop iteration
+          err instanceof Error ? err : undefined,
+        );
       }
     }
   }
@@ -743,15 +748,31 @@ export class CarryStrategy {
     try {
       const { position } = await this.exchange.getPosition(this.config.perpId, this.accountId);
       hasPerp = position.lotLNS > 0n;
-    } catch {
-      // No position
+    } catch (err) {
+      // Only treat contract reverts as "no position"; propagate RPC/network errors
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("revert") || msg.includes("AccountDoesNotExist")) {
+        hasPerp = false;
+      } else {
+        throw new CarryError(
+          `Failed to check on-chain perp position: ${msg}`,
+          "STATE_RECONCILIATION_FAILED",
+          false,
+          err instanceof Error ? err : undefined,
+        );
+      }
     }
 
     try {
       const spotBalance = await this.uniswap.getBalance(this.config.spotTokenOut);
       hasSpot = spotBalance > 0n;
-    } catch {
-      // Token might not exist or other error
+    } catch (err) {
+      throw new CarryError(
+        `Failed to check spot token balance: ${err instanceof Error ? err.message : String(err)}`,
+        "STATE_RECONCILIATION_FAILED",
+        false,
+        err instanceof Error ? err : undefined,
+      );
     }
 
     console.log(`[carry] Reconciliation: DB phase=${dbPhase}, on-chain perp=${hasPerp}, spot=${hasSpot}`);
@@ -803,7 +824,13 @@ export class CarryStrategy {
             const minAusd = expectedAusd * BigInt(10000 - DEFAULTS.SPOT_SLIPPAGE_BPS) / 10000n;
             await this.uniswap.reverseSwap(spotBalance, minAusd);
           } catch (err) {
-            console.error("[carry] Failed to sell WBTC:", err);
+            console.error("[carry] Failed to sell WBTC after liquidation:", err);
+            throw new CarryError(
+              "Failed to sell WBTC after perp liquidation. WBTC remains in wallet.",
+              "STATE_RECONCILIATION_FAILED",
+              false,
+              err instanceof Error ? err : undefined,
+            );
           }
           this.stateStore.markClosed(activeState.id, activeState.fundingEarnedCns);
           this.state = null;
