@@ -7,6 +7,7 @@ import {
   type Address,
   type Hash,
   type PublicClient,
+  type TransactionReceipt,
   type WalletClient,
   encodeFunctionData,
 } from "viem";
@@ -241,6 +242,14 @@ export class Exchange {
     const account = walletClient.account;
     if (!account) throw new Error("Wallet client must have an account");
     return account.address;
+  }
+
+  /**
+   * Wait for a transaction receipt and verify it succeeded.
+   * Throws if the transaction reverted.
+   */
+  async waitForReceipt(hash: Hash, timeoutMs = 60_000): Promise<TransactionReceipt> {
+    return waitForTransactionSuccess(this.publicClient, hash, timeoutMs);
   }
 
   // ============ Read Functions ============
@@ -1097,4 +1106,26 @@ export class Exchange {
       chain: walletClient.chain,
     });
   }
+}
+
+/**
+ * Wait for a transaction receipt and verify it succeeded.
+ * Throws if the transaction reverted on-chain.
+ *
+ * Use this after any write operation (execOrder, depositCollateral, etc.)
+ * to ensure the transaction was actually mined successfully.
+ */
+export async function waitForTransactionSuccess(
+  publicClient: PublicClient,
+  hash: Hash,
+  timeoutMs = 60_000
+): Promise<TransactionReceipt> {
+  const receipt = await publicClient.waitForTransactionReceipt({
+    hash,
+    timeout: timeoutMs,
+  });
+  if (receipt.status !== "success") {
+    throw new Error(`Transaction reverted: ${hash}`);
+  }
+  return receipt;
 }
