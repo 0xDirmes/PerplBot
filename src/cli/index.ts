@@ -10,6 +10,7 @@ import { registerManageCommand } from "./manage.js";
 import { registerShowCommand } from "./show.js";
 import { registerDebugCommand } from "./debug.js";
 import { registerSimulateCommand } from "./simulate.js";
+import { registerCarryCommand } from "./carry.js";
 
 const program = new Command();
 
@@ -25,6 +26,7 @@ registerManageCommand(program);
 registerShowCommand(program);
 registerDebugCommand(program);
 registerSimulateCommand(program);
+registerCarryCommand(program);
 
 // Parse and execute
 program.parse();
