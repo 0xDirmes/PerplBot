@@ -480,9 +480,11 @@ export class CarryStrategy {
         // ── Spot chunk (buy WBTC) ──
         const spotChunkAusd = amountToCNS(Math.min(chunkSizeUsd, spotCapital / totalPerpChunks));
         try {
+          const expectedOut = await this.uniswap.getQuote(spotChunkAusd);
+          const minOut = expectedOut * BigInt(10000 - DEFAULTS.SPOT_SLIPPAGE_BPS) / 10000n;
           const spotResult = await this.uniswap.swap(
             spotChunkAusd,
-            0n, // Min amount calculated from quote with slippage
+            minOut,
           );
           totalSpotWbtc += spotResult.amountOut;
           console.log(`[carry] Spot chunk ${i + 1}/${totalPerpChunks}: bought WBTC for $${(spotCapital / totalPerpChunks).toFixed(0)}`);
@@ -539,7 +541,9 @@ export class CarryStrategy {
     const spotChunkAusd = amountToCNS(spotCapital);
 
     try {
-      const result = await this.uniswap.swap(spotChunkAusd, 0n);
+      const expectedOut = await this.uniswap.getQuote(spotChunkAusd);
+      const minOut = expectedOut * BigInt(10000 - DEFAULTS.SPOT_SLIPPAGE_BPS) / 10000n;
+      const result = await this.uniswap.swap(spotChunkAusd, minOut);
       this.stateStore.saveState({
         ...this.state,
         phase: "active",
@@ -583,7 +587,10 @@ export class CarryStrategy {
 
     // Sell WBTC
     if (state.spotSize && BigInt(state.spotSize) > 0n) {
-      await this.uniswap.reverseSwap(BigInt(state.spotSize), 0n);
+      const wbtcAmount = BigInt(state.spotSize);
+      const expectedAusd = await this.uniswap.getQuote(wbtcAmount);
+      const minAusd = expectedAusd * BigInt(10000 - DEFAULTS.SPOT_SLIPPAGE_BPS) / 10000n;
+      await this.uniswap.reverseSwap(wbtcAmount, minAusd);
       console.log("[carry] Spot leg closed.");
     }
 
@@ -653,11 +660,15 @@ export class CarryStrategy {
         if (drift > 0) {
           // Spot too big, sell WBTC
           const wbtcToSell = BigInt(Math.round(adjustmentUsd / markPrice * 1e8));
-          await this.uniswap.reverseSwap(wbtcToSell, 0n);
+          const expectedAusd = await this.uniswap.getQuote(wbtcToSell);
+          const minAusd = expectedAusd * BigInt(10000 - DEFAULTS.SPOT_SLIPPAGE_BPS) / 10000n;
+          await this.uniswap.reverseSwap(wbtcToSell, minAusd);
         } else {
           // Spot too small, buy WBTC
           const ausdToSpend = amountToCNS(adjustmentUsd);
-          await this.uniswap.swap(ausdToSpend, 0n);
+          const expectedWbtc = await this.uniswap.getQuote(ausdToSpend);
+          const minWbtc = expectedWbtc * BigInt(10000 - DEFAULTS.SPOT_SLIPPAGE_BPS) / 10000n;
+          await this.uniswap.swap(ausdToSpend, minWbtc);
         }
 
         // Update spot size in state
@@ -739,7 +750,9 @@ export class CarryStrategy {
           console.error("[carry] ALERT: Perp liquidated! Selling WBTC...");
           try {
             const spotBalance = await this.uniswap.getBalance(this.config.spotTokenOut);
-            await this.uniswap.reverseSwap(spotBalance, 0n);
+            const expectedAusd = await this.uniswap.getQuote(spotBalance);
+            const minAusd = expectedAusd * BigInt(10000 - DEFAULTS.SPOT_SLIPPAGE_BPS) / 10000n;
+            await this.uniswap.reverseSwap(spotBalance, minAusd);
           } catch (err) {
             console.error("[carry] Failed to sell WBTC:", err);
           }

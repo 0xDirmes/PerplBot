@@ -153,6 +153,14 @@ export class UniswapClient {
     const account = this.walletClient.account!;
     const recipient = account.address; // Always self — never caller-configurable
 
+    // Snapshot balance before swap to calculate actual amountOut
+    const balanceBefore = await this.publicClient.readContract({
+      address: swapTokenOut,
+      abi: ERC20Abi,
+      functionName: "balanceOf",
+      args: [recipient],
+    });
+
     // SwapRouter02 removed deadline from params (uses multicall wrapper instead).
     // Slippage protection via amountOutMinimum is sufficient for server-side bot.
     let txHash: Hash;
@@ -206,10 +214,19 @@ export class UniswapClient {
       throw new Error(`Swap reverted: ${txHash}`);
     }
 
+    // Measure actual output from balance difference
+    const balanceAfter = await this.publicClient.readContract({
+      address: swapTokenOut,
+      abi: ERC20Abi,
+      functionName: "balanceOf",
+      args: [recipient],
+    });
+    const actualAmountOut = balanceAfter - balanceBefore;
+
     return {
       txHash,
       amountIn,
-      amountOut: minAmountOut, // Actual amount determined by events; min is guaranteed
+      amountOut: actualAmountOut,
       gasUsed: receipt.gasUsed,
     };
   }

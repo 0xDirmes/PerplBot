@@ -133,7 +133,11 @@ describe("UniswapClient", () => {
   });
 
   describe("swap", () => {
-    it("executes single-hop swap and verifies receipt", async () => {
+    it("executes single-hop swap and returns actual amountOut from balance diff", async () => {
+      // Balance before: 100, after: 1100 → actual amountOut = 1000
+      (publicClient.readContract as any)
+        .mockResolvedValueOnce(100000n) // balanceBefore
+        .mockResolvedValueOnce(1100000n); // balanceAfter
       (publicClient.simulateContract as any).mockResolvedValue({
         request: { to: defaultConfig.swapRouterAddress },
       });
@@ -154,6 +158,7 @@ describe("UniswapClient", () => {
       const result = await client.swap(1000000n, 900000n);
       expect(result.txHash).toBe("0xabc123");
       expect(result.gasUsed).toBe(150000n);
+      expect(result.amountOut).toBe(1000000n); // 1100000 - 100000
 
       // Verify receipt was checked
       expect(publicClient.waitForTransactionReceipt).toHaveBeenCalledWith({
@@ -163,6 +168,7 @@ describe("UniswapClient", () => {
     });
 
     it("throws on reverted swap", async () => {
+      (publicClient.readContract as any).mockResolvedValueOnce(100000n); // balanceBefore
       (publicClient.simulateContract as any).mockResolvedValue({
         request: { to: defaultConfig.swapRouterAddress },
       });
