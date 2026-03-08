@@ -392,7 +392,12 @@ export class CarryStrategy {
           this.stopRequested = true;
           return;
         }
-        await sleep(DEFAULTS.TWAP_INTERVAL_MS);
+        // Wait before retrying, but check for second SIGINT to force-quit
+        const waited = await interruptibleSleep(DEFAULTS.TWAP_INTERVAL_MS, () => this.stopRequested);
+        if (!waited) {
+          console.error("[carry] Force-quit requested during exit retry. Stopping with positions open.");
+          return;
+        }
       }
     }
   }
@@ -438,9 +443,11 @@ export class CarryStrategy {
       let totalPerpLns = 0n;
       let totalSpotWbtc = 0n;
 
+      let entryComplete = true;
       for (let i = 0; i < totalPerpChunks; i++) {
         if (this.stopRequested) {
-          console.log("[carry] Stop requested during entry.");
+          console.log("[carry] Stop requested during entry. Unwinding partial position...");
+          entryComplete = false;
           break;
         }
 
@@ -505,6 +512,34 @@ export class CarryStrategy {
         }
       }
 
+      // If entry was interrupted, unwind partial positions instead of saving as active
+      if (!entryComplete) {
+        console.log("[carry] Unwinding partial entry...");
+        let unwindOk = true;
+        if (totalPerpLns > 0n) {
+          try {
+            await this.unwindPerp();
+          } catch {
+            unwindOk = false;
+          }
+        }
+        if (totalSpotWbtc > 0n) {
+          try {
+            const expectedAusd = await this.uniswap.getQuote(totalSpotWbtc);
+            const minAusd = expectedAusd * BigInt(10000 - DEFAULTS.SPOT_SLIPPAGE_BPS) / 10000n;
+            await this.uniswap.reverseSwap(totalSpotWbtc, minAusd);
+          } catch {
+            unwindOk = false;
+          }
+        }
+        if (unwindOk) {
+          this.transitionToIdle();
+        } else {
+          console.error("[carry] CRITICAL: Partial unwind failed. State preserved for manual intervention.");
+        }
+        return;
+      }
+
       // Update state to active
       this.stateStore.saveState({
         id: stateId,
@@ -554,8 +589,13 @@ export class CarryStrategy {
       console.log("[carry] Spot leg completed (crash recovery).");
     } catch {
       console.error("[carry] Spot leg failed during recovery. Unwinding perp...");
-      await this.unwindPerp();
-      this.transitionToIdle();
+      try {
+        await this.unwindPerp();
+        this.transitionToIdle();
+      } catch {
+        // Unwind failed — keep state as "entering" so next startup detects orphaned position
+        console.error("[carry] CRITICAL: Perp unwind also failed. State preserved for manual intervention.");
+      }
     }
   }
 
@@ -631,6 +671,7 @@ export class CarryStrategy {
       }
     } catch (err) {
       console.error("[carry] CRITICAL: Perp unwind failed:", err);
+      throw err;
     }
   }
 
@@ -734,8 +775,13 @@ export class CarryStrategy {
         if (enterState.perpLegComplete && !enterState.spotLegComplete) {
           if (hasPerp && !hasSpot) {
             console.log("[carry] Crash during entry (perp done, spot pending). Unwinding perp.");
-            await this.unwindPerp();
-            this.transitionToIdle();
+            try {
+              await this.unwindPerp();
+              this.transitionToIdle();
+            } catch {
+              console.error("[carry] CRITICAL: Perp unwind failed during reconciliation. Manual intervention required.");
+              throw new CarryError("Perp unwind failed during reconciliation", "STATE_RECONCILIATION_FAILED", false);
+            }
           }
         } else if (!enterState.perpLegComplete) {
           console.log("[carry] Crash during entry (perp not done). Transitioning to idle.");
@@ -892,4 +938,21 @@ export class CarryStrategy {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Sleep that can be interrupted by a condition check. Returns false if interrupted. */
+function interruptibleSleep(ms: number, shouldStop: () => boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    const interval = setInterval(() => {
+      if (shouldStop()) {
+        clearInterval(interval);
+        clearTimeout(timeout);
+        resolve(false);
+      }
+    }, 1000);
+    const timeout = setTimeout(() => {
+      clearInterval(interval);
+      resolve(true);
+    }, ms);
+  });
 }
